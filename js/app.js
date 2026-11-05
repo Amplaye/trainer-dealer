@@ -1,6 +1,6 @@
 'use strict';
 // User interface. No innerHTML anywhere: every element is built with h(), text goes in as text.
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.1.1';
 const { CATS, SYM, TYPES, GROUPS, GEN, SLOTS, TARGET, fmt, parseNum, rv, shuffle, pick, grade, quizQ, winners, best, boardInfo } = DT;
 DT.setQuiz(QUIZ);
 
@@ -633,7 +633,7 @@ function viewSettings() {
 function viewInfo() {
   show(h('div', { class: 'top' }, h('button', { class: 'back', 'data-act': 'hback' }, '‹ Indietro')), h('h1', null, 'Informazioni'),
     h('p', null, 'Trainer Dealer è un\'app di allenamento non ufficiale e non è affiliata al Poker TDA.'),
-    h('p', null, 'Il testo del regolamento è la versione 2026 Rules Version 1.0, Sept 6, 2026, con Procedure Raccomandate, Illustration Addendum e Glossario. La versione inglese è quella del TDA, la traduzione italiana è di Fabiano Stefanini con revisione di Jacopo Marcelletti. Il testo è stato ripreso tramite TDA Guide (tdaguide.com), toccando solo la tipografia. Il sito del TDA potrebbe indicare una revisione successiva: controlla lì la versione in vigore. Alcuni numeri di regola citati nel testo sono rimasti quelli dell\'edizione precedente: il link porta comunque alla regola giusta. I riquadri "Da sapere" non fanno parte del regolamento: segnalano dove la traduzione italiana si discosta dal testo inglese, che fa fede.'),
+    h('p', null, 'Il testo inglese delle 74 regole è la 2026 Rules Version 1.1, Sept 21, 2026 (la 1.0 era del 6 settembre). Le Procedure Raccomandate, l\'Illustration Addendum e il Glossario sono ancora quelli della 1.0: la 1.1, secondo il TDA, corregge soprattutto rimandi interni, e le differenze nelle regole sono segnalate nei riquadri "Da sapere". La traduzione italiana è di Fabiano Stefanini con revisione di Jacopo Marcelletti, ed è quella della 1.0. Il testo è stato ripreso tramite TDA Guide (tdaguide.com), toccando solo la tipografia, e le regole sono state ricontrollate sul sito del TDA. Alcuni numeri di regola citati nel testo sono rimasti quelli dell\'edizione precedente: il link porta comunque alla regola giusta. I riquadri "Da sapere" non fanno parte del regolamento: segnalano dove la traduzione italiana si discosta dal testo inglese, che fa fede.'),
     h('p', null, 'Quiz e spiegazioni sono riassunti scritti per l\'allenamento: in caso di dubbio fa fede il testo ufficiale. Al tavolo decidono le regole della tua sala e il floor.'),
     creditEl());
   window.scrollTo(0, 0);

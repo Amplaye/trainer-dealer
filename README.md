@@ -19,7 +19,7 @@ TDA rules used by permission of the Poker TDA, Copyright 2026, [http://www.poker
 - sessioni da 5, 10 o 20 domande, con ripasso degli errori a intervalli
 - **A tempo**: 10 domande con il conto alla rovescia (obiettivi in `TARGET`, `js/logic.js`). Allo scadere la domanda conta come sbagliata e mostra la risposta
 - **Prova senza aiuti**: 20 domande, si passa con l'85% (`PASS` in `js/app.js`), con storico delle ultime prove
-- il testo TDA è la 2026 Rules Version 1.0 (6 set 2026). Una eventuale revisione successiva non è stata verificata: pokertda.com non risponde da questa macchina e tdaguide.com riporta ancora la 1.0
+- il testo inglese delle regole è la 2026 Version 1.1 (21 set 2026), ricontrollato sulla copia archiviata di pokertda.com con `tools/patch-tda-1-1.js`. Procedure, addendum, glossario e traduzione italiana restano alla 1.0 (la 1.1 corregge soprattutto rimandi interni)
 
 ## Test
 
