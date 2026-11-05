@@ -14,7 +14,8 @@ const verdict = p => p.textContent('.res b.t');
 
 async function answer(p, right, touch) {
   const plan = await p.evaluate(() => {
-    const { type, q } = cur, k = DT.TYPES[type].k;
+    const { type, q } = cur, k = DT.kindOf(type, q);
+    if (k === 'felt') return { k, sol: DT.solve(type, q), fields: !!q.fields };
     if (k === 'win') return { k, seats: DT.winners(q.board, q.holes).win };
     if (k === 'name') { const b = DT.best(q.board.concat(q.hole)); return { k, cat: b.score[0], five: b.five }; }
     if (k === 'board') { const i = DT.boardInfo(q.board); return { k, i: { paired: i.paired, flush: i.flush, straight: i.straight }, cat: i.nut[0] }; }
@@ -24,7 +25,11 @@ async function answer(p, right, touch) {
     return { k, a: q.answer, seats: q.table.seats.map(s => s.n) };
   });
   const { k } = plan;
-  if (k === 'win') { const s = right ? plan.seats : (plan.seats.includes(0) && plan.seats.length === 1 ? [1] : [0]); for (const i of s) await p.click(`[data-act=seat][data-v="${i}"]`); }
+  if (k === 'felt') {
+    await p.evaluate(({ sol, right }) => { cur.a.z = right ? sol.z : { ...sol.z, p0: [...sol.z.p0, 100] }; render(); }, { sol: plan.sol, right });
+    if (plan.fields) { const v = plan.sol.vals[0]; if (touch) { await p.click('#f0'); for (const d of v) await p.click(`[data-act=key][data-v="${d}"]`); } else await p.fill('#f0', v); }
+  }
+  else if (k === 'win') { const s = right ? plan.seats : (plan.seats.includes(0) && plan.seats.length === 1 ? [1] : [0]); for (const i of s) await p.click(`[data-act=seat][data-v="${i}"]`); }
   else if (k === 'name') { await p.click(`[data-act=cat][data-v="${right ? plan.cat : (plan.cat + 1) % 9}"]`); for (const c of plan.five) await p.click(`[data-act=card][data-v="${c}"]`); }
   else if (k === 'board') { for (const x of ['paired', 'flush', 'straight']) await p.click(`[data-act=yn][data-k=${x}][data-v="${plan.i[x] ? 1 : 0}"]`); await p.click(`[data-act=cat][data-v="${right ? plan.cat : (plan.cat + 1) % 9}"]`); }
   else if (k === 'num') {
@@ -91,6 +96,76 @@ let base;
   p.on('console', m => m.type() === 'error' && !/favicon/.test(m.text()) && errs.push('console: ' + m.text()));
   await drill(p, 'm', true, true);
   console.log('telefono: tutti gli esercizi ok');
+
+  // chips: tap to count, tap to place, change, side pot, wrong total shows the fix
+  await p.click('[data-act=start][data-v=side]'); await p.waitForSelector('.felt2');
+  await p.screenshot({ path: out + '/felt-side.png', fullPage: true });
+  await p.evaluate(() => { Object.assign(cur.q.felt, { z: { s1: [1000, 1000, 500], s2: [5000], p0: [] }, want: { s1: 0, s2: 2500, p0: 5000 }, min: 500, add: true }); cur.q.table.seats = [{ n: 1, tag: 'ALL-IN' }, { n: 2, tag: 'ALL-IN' }]; render(); });
+  const inZ = id => p.evaluate(i => zones()[i].slice().sort((a, b) => a - b).join(), id);
+  await p.click('[data-z=s1][data-v="1000"]'); await p.click('[data-z=s1][data-v="1000"]');
+  if (await inZ('s1') !== '500,1000,1000') errs.push('il tocco non deve spostare finché non posi');
+  await p.click('.zone[data-z=p0] .zh');
+  if (await inZ('p0') !== '1000,1000' || await inZ('s1') !== '500') errs.push('tocca e posa');
+  await p.click('[data-z=s2][data-v="5000"]'); await p.click('button[data-z=change]');
+  if (await inZ('s2') !== '1000,1000,1000,1000,1000') errs.push('cambio');
+  await p.click('[data-z=s2][data-v="1000"]'); await p.click('[data-act=putback]');
+  if (await p.evaluate(() => cur.hand)) errs.push('rimetti giù');
+  await p.click('[data-act=addpot]'); if (!await p.$('.zone[data-z=p1]')) errs.push('side pot non aperto');
+  await p.screenshot({ path: out + '/felt-moves.png', fullPage: true });
+  await p.click('[data-act=confirm]'); await p.waitForSelector('.res');
+  if (await verdict(p) !== 'Sbagliato') errs.push('chips sbagliate segnate giuste');
+  if (!await p.$('.zone.wrong .fix')) errs.push('manca la cifra giusta sulla zona sbagliata');
+  await p.screenshot({ path: out + '/felt-wrong.png', fullPage: true });
+  await p.click('[data-act=exit]'); await p.waitForSelector('.start');
+  console.log('chips al tocco ok');
+
+  // a real finger: raw touch events, no mouse
+  await p.click('[data-act=start][data-v=side]'); await p.waitForSelector('.felt2');
+  await p.evaluate(() => { Object.assign(cur.q.felt, { z: { s1: [1000, 1000, 500], p0: [] }, want: { s1: 0, p0: 2500 } }); cur.q.table.seats = [{ n: 1 }]; render(); });
+  const cdp = await ctx.newCDPSession(p);
+  const centre = async s => { const r = await (await p.$(s)).boundingBox(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; };
+  const finger = async (a, b) => {
+    const A = await centre(a), B = await centre(b);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [A] });
+    for (let i = 1; i <= 6; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: A.x + (B.x - A.x) * i / 6, y: A.y + (B.y - A.y) * i / 6 }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  };
+  const y0 = await p.evaluate(() => scrollY);
+  await finger('[data-z=s1][data-v="1000"]', '.zone[data-z=p0]'); await p.waitForTimeout(50);
+  if (await inZ('p0') !== '1000,1000' || await inZ('s1') !== '500') errs.push('dito: pila non spostata ' + await inZ('p0'));
+  if (await p.evaluate(() => scrollY) !== y0) errs.push('dito: la pagina scorre mentre trascini');
+  await finger('.zone[data-z=s1] .zh', '.zone[data-z=p0]'); await p.waitForTimeout(50);
+  if (await inZ('p0') !== '500,1000,1000') errs.push('dito: zona non spostata ' + await inZ('p0'));
+  if (await p.$('.ghost')) errs.push('dito: fantasma rimasto');
+  await p.click('[data-act=confirm]'); await p.waitForSelector('.res');
+  if (await verdict(p) !== 'Giusto') errs.push('dito: esito');
+  await p.click('[data-act=exit]'); await p.waitForSelector('.start');
+  console.log('trascinamento col dito ok');
+
+  // chips in hand when the clock stops must not vanish from the table
+  await p.click('[data-act=start][data-v=side]'); await p.waitForSelector('.felt2');
+  await p.evaluate(() => { Object.assign(cur.q.felt, { z: { s1: [1000], p0: [] }, want: { s1: 0, p0: 1000 } }); cur.q.table.seats = [{ n: 1 }]; render(); });
+  await p.click('[data-z=s1][data-v="1000"]');
+  await p.evaluate(() => { cur.a.z = zones(); timeout(); });
+  if (!await p.$('.zone[data-z=s1] .fp')) errs.push('fiche in mano sparita allo scadere');
+  await p.click('[data-act=exit]'); await p.waitForSelector('.start');
+
+  // odd chip: the button stays visible even on a seat that is not splitting
+  await p.click('[data-act=start][data-v=odd]'); await p.waitForSelector('.felt2');
+  if (!await p.$('.felt2 .dbtn')) errs.push('fiche dispari: bottone non visibile');
+  if (await p.evaluate(() => document.querySelectorAll('.felt2 .zone:not(.potz)').length) !== 9) errs.push('fiche dispari: mancano dei posti');
+  await p.click('[data-act=exit]'); await p.waitForSelector('.start');
+
+  // errors saved before 2.2: still numbers, still answerable
+  await p.evaluate(() => { store.srs = [{ id: 'old', type: 'side', box: 0, due: 0, q: { title: 'Dividi i piatti', head: '', lines: ['Posto 1: all-in per 500'], shown: [], table: { seats: [{ n: 1, bet: 500, tag: 'ALL-IN' }] }, fields: [{ label: 'Piatto principale', answer: 500 }], steps: ['Somma.'], tip: 'x', rules: ['R23'] } }]; save(); });
+  await p.reload(); await p.waitForSelector('.start');
+  await p.click('[data-act=start][data-v=review]'); await p.waitForSelector('#f0');
+  if (await p.$('.felt2')) errs.push('errore vecchio finito sul tavolo nuovo');
+  await p.click('#f0'); for (const c of '500') await p.click(`[data-act=key][data-v="${c}"]`);
+  await p.click('[data-act=confirm]'); await p.waitForSelector('.res');
+  if (await verdict(p) !== 'Giusto') errs.push('errore vecchio: esito');
+  await p.click('[data-act=next]'); await p.waitForSelector('text=Sessione finita'); await p.click('[data-act=gohome]'); await p.waitForSelector('.start');
+  console.log('errori vecchi ok');
 
   // resume after closing
   await p.click('[data-act=start][data-v=mix5]'); await p.waitForSelector('[data-act=confirm]');
@@ -207,6 +282,39 @@ let base;
   const c2 = await b.newContext({ viewport: { width: 1200, height: 860 } }); const d = await c2.newPage();
   d.on('pageerror', e => errs.push('JS desktop: ' + e.message));
   await drill(d, 'd', false, false);
+  // drag: a whole pile, a whole zone, dropped nowhere goes back
+  await d.goto(base + '#/'); await d.waitForSelector('.start');
+  await d.click('[data-act=start][data-v=side]'); await d.waitForSelector('.felt2');
+  await d.evaluate(() => { Object.assign(cur.q.felt, { z: { s1: [1000, 1000, 500], s2: [500], p0: [] }, want: { s1: 0, s2: 0, p0: 3000 } }); cur.q.table.seats = [{ n: 1 }, { n: 2 }]; render(); });
+  const mid = async s => { const r = await (await d.$(s)).boundingBox(); return [r.x + r.width / 2, r.y + r.height / 2]; };
+  const dragTo = async (a, b) => { const [x, y] = await mid(a), [X, Y] = await mid(b); await d.mouse.move(x, y); await d.mouse.down(); await d.mouse.move(x + 20, y + 20, { steps: 3 }); await d.mouse.move(X, Y, { steps: 5 }); await d.mouse.up(); };
+  const zs = () => d.evaluate(() => JSON.stringify(zones()));
+  await dragTo('[data-z=s1][data-v="1000"]', '.zone[data-z=p0]');
+  if (await zs() !== JSON.stringify({ s1: [500], s2: [500], p0: [1000, 1000] })) errs.push('trascina la pila: ' + await zs());
+  await dragTo('.zone[data-z=s2] .zh', '.zone[data-z=p0]');
+  if (await zs() !== JSON.stringify({ s1: [500], s2: [], p0: [1000, 1000, 500] })) errs.push('trascina tutta la zona: ' + await zs());
+  await dragTo('[data-z=s1][data-v="500"]', '.q');
+  if (await zs() !== JSON.stringify({ s1: [500], s2: [], p0: [1000, 1000, 500] }) || await d.evaluate(() => cur.hand)) errs.push('posata fuori deve tornare indietro');
+  if (await d.$('.ghost')) errs.push('fantasma rimasto');
+  await dragTo('[data-z=s1][data-v="500"]', '.zone[data-z=p0]');
+  await d.click('[data-act=confirm]'); await d.waitForSelector('.res');
+  if (await verdict(d) !== 'Giusto') errs.push('trascinando tutto giusto non è Giusto');
+  await d.click('[data-act=exit]'); await d.waitForSelector('.start');
+  console.log('trascinamento ok');
+
+  // smallest phone with the biggest text: nothing may stick out of the screen
+  const c4 = await b.newContext({ viewport: { width: 320, height: 640 }, hasTouch: true, isMobile: true }); const s = await c4.newPage();
+  await s.goto(base); await s.waitForSelector('.start');
+  await s.evaluate(() => { store.size = 'xl'; save(); applySize(); store.level = 'hard'; });
+  for (const t of ['side', 'pay', 'pot', 'odd']) {
+    await s.click(`[data-act=start][data-v=${t}]`); await s.waitForSelector('.felt2'); await overflow(s, 'schermo piccolo ' + t);
+    const out2 = await s.evaluate(() => [...document.querySelectorAll('.zone,.fp,.zh')].filter(e => { const r = e.getBoundingClientRect(), f = document.querySelector('.felt2').getBoundingClientRect(); return r.right > f.right + 1 || r.left < f.left - 1; }).length);
+    if (out2) errs.push(`schermo piccolo ${t}: ${out2} elementi fuori dal tavolo`);
+    await s.screenshot({ path: `${out}/small-${t}.png`, fullPage: true });
+    await s.click('[data-act=exit]'); await s.waitForSelector('.start');
+  }
+  await c4.close();
+  console.log('schermo piccolo ok');
   await d.goto(base + '#/'); await d.waitForSelector('.start'); await d.screenshot({ path: out + '/home-d.png', fullPage: true });
   await d.click('[data-act=start][data-v=raise]'); await d.waitForSelector('#f0');
   const a = await d.evaluate(() => cur.q.fields[0].answer);

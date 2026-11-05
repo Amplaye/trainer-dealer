@@ -21,6 +21,10 @@ TDA rules used by permission of the Poker TDA, Copyright 2026, [http://www.poker
 - **Prova senza aiuti**: 20 domande, si passa con l'85% (`PASS` in `js/app.js`), con storico delle ultime prove
 - il testo inglese delle regole è la 2026 Version 1.1 (21 set 2026), ricontrollato sulla copia archiviata di pokertda.com con `tools/patch-tda-1-1.js`. Procedure, addendum, glossario e traduzione italiana restano alla 1.0 (la 1.1 corregge soprattutto rimandi interni)
 
+## Chips sul tavolo
+
+Side pot, Pagamenti, Conta il piatto e Fiche dispari si fanno con le chips (`q.felt`: `z` dove stanno, `want` quanto deve esserci a fine esercizio, `min` il taglio sotto cui il cambio si ferma). Nessun totale a vista finché non confermi: il tavolo tiene lo stato, tu conti. Gli errori salvati prima della 2.2 non hanno `felt` e restano esercizi a numeri (`kindOf`, `js/logic.js`).
+
 ## Test
 
 ```

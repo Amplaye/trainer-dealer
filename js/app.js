@@ -1,6 +1,6 @@
 'use strict';
 // User interface. No innerHTML anywhere: every element is built with h(), text goes in as text.
-const APP_VERSION = '2.1.1';
+const APP_VERSION = '2.2.0';
 const { CATS, SYM, TYPES, GROUPS, GEN, SLOTS, TARGET, fmt, parseNum, rv, shuffle, pick, grade, quizQ, winners, best, boardInfo } = DT;
 DT.setQuiz(QUIZ);
 
@@ -92,6 +92,48 @@ function chipTable(stacks) {
     const piles = []; for (let left = s.n; left > 0; left -= 20) piles.push(Math.min(20, left));
     return h('div', { class: 'col' }, h('div', { class: 'pilerow' }, piles.map(n => h('div', { class: 'pile' }, Array.from({ length: n }, () => h('i', { class: 'disc', style: `background:${CHIP[s.v]}` }))))), h('b', null, fmt(s.v)));
   }))));
+}
+// Seat 1 sits bottom left and the numbers run clockwise, as on the oval table.
+const seatCell = n => n === 5 ? 'grid-area:1/2' : n < 5 ? `grid-area:${5 - n}/1` : `grid-area:${n - 5}/3`;
+const shortV = v => v >= 1000 ? v / 1000 + 'k' : String(v);
+const zones = () => cur.a.z || cur.q.felt.z;
+function pileEl(v, n, z) {
+  if (!n) return null;
+  const discs = Array.from({ length: n }, () => h('i', { class: 'fd', style: `background:${CHIP[v]}` }));
+  const kids = [h('span', { class: 'fstack' }, discs), h('b', null, shortV(v))];
+  return z ? h('button', { class: 'fp', 'data-act': 'chip', 'data-z': z, 'data-v': v, 'aria-label': `Prendi una fiche da ${fmt(v)}` }, kids) : h('span', { class: 'fp' }, kids);
+}
+function pilesOf(id, z, hand) {
+  const left = (z[id] || []).slice();
+  if (hand && hand.from === id) hand.chips.forEach(c => left.splice(left.indexOf(c), 1));
+  return DT.DENOMS.map(v => pileEl(v, left.filter(c => c === v).length, id));
+}
+function tapChip(z, v) {
+  if (cur.hand && cur.hand.from !== z) return placeHand(z);
+  const hand = cur.hand || { from: z, chips: [] }, inHand = hand.chips.filter(c => c === v).length;
+  if (zones()[z].filter(c => c === v).length > inHand) { hand.chips.push(v); cur.hand = hand; buzz(5); }
+}
+function placeHand(to) {
+  const hand = cur.hand; if (!hand) return;
+  cur.hand = null;
+  if (to === hand.from) return;
+  if (to !== 'change') { cur.a.z = DT.moveChips(zones(), hand.from, hand.chips, to); buzz(8); return; }
+  const z = DT.breakChips(zones(), hand.from, hand.chips, cur.q.felt.min);
+  if (JSON.stringify(z) === JSON.stringify(zones())) toast('Più piccola di così non si cambia.'); else cur.a.z = z;
+}
+let drag = null, skipClick = false;
+// No render here: replacing the pressed element would lose the finger on touch screens.
+function liftChips() {
+  const { p } = drag, z = p.dataset.z || p.dataset.grab;
+  if (!cur.hand) {
+    const chips = p.dataset.grab ? zones()[z] || [] : zones()[z].filter(c => c === +p.dataset.v);
+    if (!chips.length) return false;
+    cur.hand = { from: z, chips: chips.slice() };
+  }
+  drag.ghost = h('div', { class: 'ghost fps' }, DT.DENOMS.map(v => pileEl(v, cur.hand.chips.filter(c => c === v).length)));
+  document.body.append(drag.ghost);
+  (p.dataset.grab ? p.parentElement : p).classList.add('lifted');
+  return true;
 }
 const coarse = () => window.matchMedia('(pointer:coarse)').matches;
 function buzz(p) { if (store.vibrate && navigator.vibrate) navigator.vibrate(p); }
@@ -201,7 +243,7 @@ function next(sameType) {
   window.scrollTo(0, 0);
   persist();
 }
-function setCur(c) { cur = c; cur.field = 0; cur.role = 'bb'; }
+function setCur(c) { cur = c; cur.field = 0; cur.role = 'bb'; cur.hand = null; }
 function persist() {
   if (!ses) { store.resume = null; save(); return; }
   const { mode, total, done, ok, ms, miss, exam, ids, queue, timeouts } = ses;
@@ -250,6 +292,18 @@ function qBox(q, shown) {
   return h('div', { class: 'q' }, q.title && !q.quiz && h('b', null, q.title), q.head && h('p', null, q.head),
     q.quiz ? h('p', { class: 'qt' }, q.lines[0]) : lines.length ? h('ul', null, lines.map(l => h('li', null, l))) : null);
 }
+function fieldsEl(q) {
+  const done = cur.res, touch = coarse();
+  const f = q.fields.map((x, i) => {
+    const v = cur.a.vals[i] ?? '', ok = done && parseNum(v) === x.answer;
+    const cls = done ? (ok ? 'good' : 'wrong') : (touch && cur.field === i ? 'active' : '');
+    return h('div', { class: 'field' }, h('label', { for: 'f' + i }, x.label),
+      h('div', null, h('input', { id: 'f' + i, inputmode: touch ? 'none' : 'numeric', autocomplete: 'off', value: v, readonly: !!done || touch, class: cls, 'data-field': i }),
+        done && !ok && h('span', { class: 'fix' }, fmt(x.answer))));
+  });
+  const pad = touch && !done ? h('div', { class: 'pad' }, ['1', '2', '3', '4', '5', '6', '7', '8', '9', '00', '0', '⌫'].map(k => h('button', { 'data-act': 'key', 'data-v': k, 'aria-label': k === '⌫' ? 'Cancella' : k }, k))) : null;
+  return [f, pad];
+}
 const R = {
   win() {
     const { board, holes } = cur.q, done = cur.res, w = done ? winners(board, holes) : null, slots = SLOTS[holes.length];
@@ -281,16 +335,28 @@ const R = {
     return [label(`Siamo al ${{ 3: 'flop', 4: 'turn', 5: 'river' }[board.length]}, e conta quello che è possibile adesso`), tableEl(boardEl(board), [1, 3, 4, 5, 7].map(s => seatEl(s, backs()))), yn('paired', 'È accoppiato?'), yn('flush', 'Il colore è possibile?'), yn('straight', 'La scala è possibile?'), label('Punto massimo possibile'), catBtns(cur.a.cat, done ? inf.nut[0] : null)];
   },
   num() {
-    const q = cur.q, done = cur.res, touch = coarse();
-    const f = q.fields.map((x, i) => {
-      const v = cur.a.vals[i] ?? '', ok = done && parseNum(v) === x.answer;
-      const cls = done ? (ok ? 'good' : 'wrong') : (touch && cur.field === i ? 'active' : '');
-      return h('div', { class: 'field' }, h('label', { for: 'f' + i }, x.label),
-        h('div', null, h('input', { id: 'f' + i, inputmode: touch ? 'none' : 'numeric', autocomplete: 'off', value: v, readonly: !!done || touch, class: cls, 'data-field': i }),
-          done && !ok && h('span', { class: 'fix' }, fmt(x.answer))));
-    });
-    const pad = touch && !done ? h('div', { class: 'pad' }, ['1', '2', '3', '4', '5', '6', '7', '8', '9', '00', '0', '⌫'].map(k => h('button', { 'data-act': 'key', 'data-v': k, 'aria-label': k === '⌫' ? 'Cancella' : k }, k))) : null;
+    const q = cur.q, [f, pad] = fieldsEl(q);
     return [q.table && numTable(q.table), q.stacks && chipTable(q.stacks), qBox(q, q.shown), f, pad];
+  },
+  felt() {
+    const q = cur.q, f = q.felt, done = cur.res, z = zones(), hand = cur.hand;
+    const zone = (id, title, o = {}) => {
+      const n = DT.zoneSum(z[id]), w = f.want[id] || 0, right = n === w;
+      return h('div', { class: `zone ${o.cls || ''} ${done ? (right ? 'good' : 'wrong') : ''} ${hand && hand.from === id ? 'from' : ''}`, style: o.style, 'data-act': 'place', 'data-z': id },
+        h('button', { class: 'zh', 'data-grab': id, 'aria-label': `${title}: tocca per posare le chips, trascina per prenderle tutte` }, h('span', null, title), o.kids,
+          done && h('b', null, fmt(n)), done && !right && h('span', { class: 'fix' }, fmt(w))),
+        h('div', { class: 'fps' }, pilesOf(id, z, hand)));
+    };
+    const seats = q.table.seats.map(s =>
+      zone('s' + s.n, `Posto ${s.n}`, { style: seatCell(s.n), kids: [q.table.button === s.n && h('i', { class: 'dbtn' }, 'D'), s.tag && h('span', { class: `tag ${s.tag === 'FOLD' ? 'fold' : ''}` }, s.tag)] }));
+    const ids = [...new Set([...Object.keys(z), ...(done ? Object.keys(f.want) : [])])].filter(id => id[0] === 'p').sort();
+    const held = hand ? h('div', { class: 'fps' }, DT.DENOMS.map(v => pileEl(v, hand.chips.filter(c => c === v).length))) : h('span', { class: 'small' }, 'Niente');
+    return [qBox(q),
+      label('Tocca una pila per contare le chips una a una, poi tocca dove posarle. Trascina per spostare la pila intera.'),
+      h('div', { class: 'felt2' }, h('div', { class: 'you' }, 'TU'), seats, h('div', { class: 'pots' }, ids.map(id => zone(id, DT.potName(+id.slice(1)), { cls: 'potz' })), f.add && !done ? h('button', { class: 'btn addpot', 'data-act': 'addpot' }, '+ Side pot') : null)),
+      done ? null : h('div', { class: 'tray' }, h('div', { class: 'hand' }, h('span', { class: 'small' }, 'In mano'), held, hand ? h('button', { class: 'btn', 'data-act': 'putback' }, 'Rimetti giù') : null),
+        h('button', { class: 'btn change', 'data-act': 'place', 'data-z': 'change', disabled: !hand }, 'Cambio')),
+      q.fields ? fieldsEl(q) : null];
   },
   choice() {
     const q = cur.q, done = cur.res;
@@ -328,18 +394,18 @@ const R = {
   }
 };
 function render() {
-  const k = TYPES[cur.type].k, body = (R[k] || R.num)();
+  const k = DT.kindOf(cur.type, cur.q), body = (R[k] || R.num)();
   show(cur.review ? h('div', { class: 'top' }, h('button', { class: 'back', 'data-act': 'backsum' }, '‹ Riepilogo')) : header(), body, footer());
 }
 function confirmQ() {
   if (cur.res) return;
-  const k = TYPES[cur.type].k;
-  if (k === 'num') cur.q.fields.forEach((f, i) => { cur.a.vals[i] = document.getElementById('f' + i).value.trim(); });
+  if (cur.q.fields) cur.q.fields.forEach((f, i) => { cur.a.vals[i] = document.getElementById('f' + i).value.trim(); });
   const r = grade(cur.type, cur.q, cur.a);
   if (!r) { document.getElementById('hint').textContent = 'Manca ancora qualcosa da rispondere.'; return; }
   finishQ(r);
 }
 function finishQ(r) {
+  cur.hand = null;
   r.ms = Date.now() - cur.t0;
   record(cur.type, r.ok, r.ms);
   if (cur.q.quiz) { const s = store.quizSeen[cur.q.id] || (store.quizSeen[cur.q.id] = { n: 0, ok: 0 }); s.n++; if (r.ok) s.ok++; }
@@ -712,6 +778,10 @@ function onClick(e) {
   if (act === 'role') cur.role = v;
   if (act === 'nosb') { cur.a.roles.sb = 0; const nx = ['bb', 'btn'].find(k => cur.a.roles[k] == null); if (nx) cur.role = nx; }
   if (act === 'key') return padKey(v);
+  if (act === 'chip') tapChip(b.dataset.z, +v);
+  if (act === 'place') placeHand(b.dataset.z);
+  if (act === 'putback') cur.hand = null;
+  if (act === 'addpot') { const z = cur.a.z = JSON.parse(JSON.stringify(zones())); z['p' + Object.keys(z).filter(k => k[0] === 'p').length] = []; }
   render();
 }
 function padKey(k) {
@@ -745,7 +815,28 @@ function importData(file) {
   };
   fr.readAsText(file);
 }
+document.addEventListener('click', e => { if (skipClick) { skipClick = false; e.stopPropagation(); } }, true);
 document.addEventListener('click', onClick);
+document.addEventListener('pointerdown', e => {
+  if (!cur || cur.res || !cur.q.felt) return;
+  const p = e.target.closest('[data-grab],[data-act=chip]');
+  if (p) drag = { id: e.pointerId, p, x: e.clientX, y: e.clientY, ghost: null, had: cur.hand };
+});
+document.addEventListener('pointermove', e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  if (!drag.ghost && (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 8 || !liftChips())) return;
+  drag.ghost.style.transform = `translate(${e.clientX}px,${e.clientY}px) translate(-50%,-50%)`;
+});
+document.addEventListener('pointerup', e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const d = drag; drag = null; if (!d.ghost) return;
+  d.ghost.remove(); skipClick = true; setTimeout(() => { skipClick = false; });
+  if (!cur || cur.res) return;
+  const t = document.elementFromPoint(e.clientX, e.clientY), to = t && t.closest('[data-z]');
+  if (to) placeHand(to.dataset.z); else cur.hand = d.had;
+  render();
+});
+document.addEventListener('pointercancel', () => { if (!drag) return; if (drag.ghost) { drag.ghost.remove(); if (cur) { cur.hand = drag.had; render(); } } drag = null; });
 document.addEventListener('input', e => {
   if (e.target.id === 'tdasearch') { tdaQuery = e.target.value; renderTDAList(); return; }
   if (e.target.dataset.field != null) {

@@ -274,6 +274,28 @@
     }
     return { title: 'Quanto deve aggiungere per chiamare?', head: `Bui ${fmt(sb)}/${fmt(bb)}.`, lines, table, fields: [{ label: 'Da aggiungere', answer: ans }], steps, tip, rules: ['R51', 'RP12', 'RP24'] };
   }
+  // ---------- chips on the felt: the table itself holds the state, nothing to keep in your head ----------
+  const DENOMS = [25000, 5000, 1000, 500, 100];
+  const BREAK = { 25000: [5000, 5], 5000: [1000, 5], 1000: [500, 2], 500: [100, 5] };
+  function chipsFor(x) { const out = []; for (const d of DENOMS) while (x >= d) { out.push(d); x -= d; } return out; }
+  const zoneSum = cs => (cs || []).reduce((a, b) => a + b, 0);
+  const copyZ = z => JSON.parse(JSON.stringify(z));
+  const pull = (cs, v) => { const i = cs.indexOf(v); if (i < 0) throw new Error('fiche assente: ' + v); cs.splice(i, 1); };
+  function moveChips(z, from, chips, to) {
+    const o = copyZ(z);
+    chips.forEach(v => { pull(o[from], v); (o[to] = o[to] || []).push(v); });
+    return o;
+  }
+  // Change stays in the zone it came from, like swapping a chip with the tray. Never below the smallest chip in play.
+  function breakChips(z, from, chips, min) {
+    const o = copyZ(z);
+    chips.forEach(v => { const b = BREAK[v]; if (!b || b[0] < min) return; pull(o[from], v); for (let i = 0; i < b[1]; i++) o[from].push(b[0]); });
+    return o;
+  }
+  const feltOk = (f, z) => [...new Set([...Object.keys(f.want), ...Object.keys(z)])].every(id => zoneSum(z[id]) === (f.want[id] || 0));
+  // Errors saved before v2.2 have no felt: they stay number exercises, so the review list keeps working.
+  const kindOf = (type, q) => q && q.felt ? 'felt' : TYPES[type].k;
+
   function genPot(level) {
     const [sb, bb] = pick(BLINDS), u = unitOf(bb), seats = rint(6, 9);
     const ante = level === 'easy' ? 'none' : pick(['none', 'bb', 'bb', 'each']);
@@ -296,17 +318,22 @@
     st(table, at(1), sc ? { bet: x, tag: 'CHIAMA' } : { bet: sb, tag: 'FOLD' }); if (sc) alive.push(at(1));
     st(table, at(2), bc ? { bet: x, tag: 'CHIAMA' } : { bet: bb, tag: 'FOLD' }); if (bc) alive.push(at(2));
     if (ante === 'bb') st(table, at(2), { note: 'BB ante' });
+    const antes = pot;
     pot += x * inn; steps.push(`${inn} giocatori hanno messo ${fmt(x)}: ${fmt(x)} × ${inn} = ${fmt(x * inn)}.`);
     if (!sc) { pot += sb; steps.push(`Lo small blind foldato resta nel piatto: + ${fmt(sb)}.`); }
     if (!bc) { pot += bb; steps.push(`Il big blind foldato resta nel piatto: + ${fmt(bb)}.`); }
+    let flop = null;
     if (level !== 'easy' && coin(.6)) {
       const b = Math.max(bb, Math.round(pot / 2 / bb) * bb), k = rint(1, inn - 1);
       lines.push(`Al flop uno punta ${fmt(b)}, ${k === 1 ? 'uno chiama' : k + ' chiamano'}, gli altri foldano.`);
+      flop = { b, seats: alive.slice(0, 1 + k), before: pot };
       pot += b * (1 + k); steps.push(`Giro del flop: ${fmt(b)} × ${1 + k} = ${fmt(b * (1 + k))}.`);
-      alive.slice(0, 1 + k).forEach(n => st(table, n, { note: `flop ${fmt(b)}` }));
+      table.seats.forEach(s => { const i = flop.seats.indexOf(s.n); s.tag = i < 0 ? 'FOLD' : i ? 'CHIAMA' : 'PUNTA'; });
     }
+    const z = { p0: chipsFor(flop ? flop.before : antes) }, want = { p0: pot };
+    table.seats.forEach(s => { const c = flop ? (flop.seats.includes(s.n) ? flop.b : 0) : s.bet || 0; z['s' + s.n] = chipsFor(c); want['s' + s.n] = 0; });
     steps.push(`Totale: ${fmt(pot)}.`);
-    return { title: 'Quanto c\'è nel piatto?', head: `Bui ${fmt(sb)}/${fmt(bb)}.`, lines, table, fields: [{ label: 'Piatto totale', answer: pot }], steps, tip: 'In no-limit il piatto non si annuncia: è un conto che tieni per te, per esempio per la regola 59 sulle puntate ambigue.', rules: ['R56', 'R59'] };
+    return { title: 'Quanto c\'è nel piatto?', head: `Bui ${fmt(sb)}/${fmt(bb)}.`, lines, table, felt: { z, want, min: 100 }, fields: [{ label: 'Piatto totale', answer: pot }], steps, tip: 'In no-limit il piatto non si annuncia: è un conto che tieni per te, per esempio per la regola 59 sulle puntate ambigue.', rules: ['R56', 'R59'] };
   }
   function genChips(level) {
     const set = pick([[100, 500, 1000, 5000], [500, 1000, 5000, 25000], [25, 100, 500, 1000]]);
@@ -333,7 +360,7 @@
     let chips = rint(21, 240); while (chips % n === 0) chips++;
     const seats = someSeats(n), button = rint(1, 9), pot = chips * chip;
     const { pay, order, extra } = splitPot(pot, chip, seats, button);
-    const table = mkTable(button); table.pot = pot;
+    const table = mkTable(button);
     seats.forEach(s => st(table, s, { tag: 'DIVIDE', hot: true }));
     const walk = []; for (let k = 1; k <= 9; k++) { const s = seatAt(button, k); walk.push(s); if (s === order[0]) break; }
     const base = Math.floor(chips / n);
@@ -345,8 +372,8 @@
     ];
     return {
       title: 'Piatto diviso con fiche dispari', head: '', table,
-      lines: [`Piatto ${fmt(pot)}, fiche più piccola in gioco: ${fmt(chip)}.`, `Bottone al posto ${button}.`, `Dividono i posti ${seats.join(', ')}.`],
-      fields: seats.map(s => ({ label: `Posto ${s}`, answer: pay[s] })), steps,
+      lines: [`Fiche più piccola in gioco: ${fmt(chip)}.`, `Bottone al posto ${button}.`, `Dividono i posti ${seats.join(', ')}.`],
+      felt: { z: { p0: chipsFor(pot), ...Object.fromEntries(seats.map(s => ['s' + s, []])) }, want: { p0: 0, ...Object.fromEntries(seats.map(s => ['s' + s, pay[s]])) }, min: chip }, steps,
       tip: 'Nei giochi con board la fiche in più va al primo a sinistra del bottone. La "posizione peggiore" (21-D, novità 2026) vale solo nei giochi non standard, non nell\'hold\'em. Con i side pot ogni piatto si divide per conto suo (regola 23).',
       rules: ['R21', 'R23']
     };
@@ -394,7 +421,6 @@
     return players;
   }
   const sideTable = pl => ({ seats: pl.map(p => ({ n: p.n, bet: p.c, tag: p.folded ? 'FOLD' : 'ALL-IN' })) });
-  const sideLines = pl => pl.map(p => p.folded ? `${p.name}: ha messo ${fmt(p.c)} e poi ha foldato` : `${p.name}: all-in per ${fmt(p.c)}`);
   function potSteps(pl, pots) {
     const act = pl.filter(p => !p.folded).map(p => p.c).sort((a, b) => a - b);
     const out = [`Metti in fila gli all-in dal più piccolo: ${[...new Set(act)].map(fmt).join(', ')}.`];
@@ -406,18 +432,19 @@
   }
   function genSide(level) {
     const pl = sideScenario(level), { pots, refund } = computePots(pl);
-    const fields = pots.map((p, i) => ({ label: potName(i), answer: p.amount }));
-    if (refund) fields.push({ label: `Restituiti al ${refund.name}`, answer: refund.amount });
+    const z = { p0: [] }, want = {};
+    pl.forEach(p => { z['s' + p.n] = chipsFor(p.c); want['s' + p.n] = refund && refund.name === p.name ? refund.amount : 0; });
+    pots.forEach((p, i) => { want['p' + i] = p.amount; });
     const steps = potSteps(pl, pots);
     if (refund) steps.push(`${refund.name}: i ${fmt(refund.amount)} in più non li copre nessuno, quindi tornano indietro. Non sono un piatto.`);
-    return { title: 'Dividi i piatti', head: '', lines: sideLines(pl), shown: [], table: sideTable(pl), fields, steps, tip: 'Il gradino di ogni piatto è la differenza tra un all-in e il precedente, moltiplicata per chi ci arriva.', rules: ['R23', 'I17'] };
+    return { title: 'Dividi i piatti', head: '', lines: ['Conta gli all-in e costruisci i piatti. Quello che nessuno copre resta davanti al giocatore.'], table: sideTable(pl), felt: { z, want, min: pl.step, add: true }, steps, tip: 'Il gradino di ogni piatto è la differenza tra un all-in e il precedente, moltiplicata per chi ci arriva.', rules: ['R23', 'I17'] };
   }
   function genPay(level) {
     const pl = sideScenario(level), act = pl.filter(p => !p.folded), order = shuffle(act.map(p => p.name));
     const tie = level !== 'easy' && coin(.3);
     const groups = tie ? [[order[0], order[1]], ...order.slice(2).map(n => [n])] : order.map(n => [n]);
     const button = pick(pl).n, chip = pl.step;
-    const { pay, lines, refund } = payouts(pl, groups, button, chip);
+    const { pay, lines, refund } = payouts(pl, groups, button, chip), { pots } = computePots(pl);
     const steps = lines.slice().reverse().map(l => {
       if (!l.split) return `${potName(l.i)} (${fmt(l.amount)}): lo vince il ${l.w[0]}, la mano migliore tra chi può giocarlo.`;
       const s = l.split;
@@ -428,10 +455,12 @@
     const table = sideTable(pl); table.button = button;
     groups.forEach((g, i) => g.forEach(nm => st(table, pl.find(p => p.name === nm).n, { tag: `${i + 1}ª MANO` })));
     const rank = 'Mani dalla migliore alla peggiore: ' + groups.map(g => g.join(' = ')).join(' > ') + '.';
-    const shown = [rank]; if (tie) shown.push(`Fiche più piccola in gioco: ${fmt(chip)}.`);
+    const shown = [...pots.map((p, i) => `${potName(i)}: se lo giocano ${p.elig.join(', ')}.`), rank]; if (tie) shown.push(`Fiche più piccola in gioco: ${fmt(chip)}.`);
+    const z = {}, want = {};
+    pots.forEach((p, i) => { z['p' + i] = chipsFor(p.amount); want['p' + i] = 0; });
+    pl.forEach(p => { z['s' + p.n] = refund && refund.name === p.name ? chipsFor(refund.amount) : []; want['s' + p.n] = pay[p.name]; });
     return {
-      title: 'Quanto prende ognuno?', head: '', lines: [...sideLines(pl), ...shown], shown, table,
-      fields: act.map(p => ({ label: p.name, answer: pay[p.name] })), steps,
+      title: 'Paga i piatti', head: '', lines: shown, table, felt: { z, want, min: chip }, steps,
       tip: 'Si assegna prima il side pot e poi il principale (Illustration Addendum, regola 17). Con più side pot la prassi è partire dall\'ultimo e tornare indietro. Le carte di chi gioca solo il principale si scoprono subito con le altre, non si aspetta il side pot.',
       rules: ['R23', 'I17', 'R21']
     };
@@ -806,7 +835,8 @@
 
   // The answer that grades as right: used for the timeout (to show the explanation) and by the tests.
   function solve(type, q) {
-    const k = TYPES[type].k;
+    const k = kindOf(type, q);
+    if (k === 'felt') return { z: Object.fromEntries(Object.entries(q.felt.want).map(([id, v]) => [id, chipsFor(v)])), vals: (q.fields || []).map(f => String(f.answer)) };
     if (k === 'win') return { seats: winners(q.board, q.holes).win };
     if (k === 'name') { const b = best(q.board.concat(q.hole)); return { cat: b.score[0], cards: b.five }; }
     if (k === 'board') { const i = boardInfo(q.board); return { paired: i.paired, flush: i.flush, straight: i.straight, cat: i.nut[0] }; }
@@ -816,7 +846,7 @@
     return { roles: q.answer };
   }
   // Seconds a dealer should need at the table. The timed session counts down from these.
-  const TARGET = { win: 25, name: 30, board: 30, side: 60, pay: 75, raise: 30, call: 20, pot: 40, odd: 40, chips: 30, push: 25, reopen: 30, order: 15, show: 20, blinds: 30, bbante: 25, misdeal: 20, oot: 25, words: 20, penalty: 20, quiz: 20 };
+  const TARGET = { win: 25, name: 30, board: 30, side: 90, pay: 90, raise: 30, call: 20, pot: 60, odd: 60, chips: 30, push: 25, reopen: 30, order: 15, show: 20, blinds: 30, bbante: 25, misdeal: 20, oot: 25, words: 20, penalty: 20, quiz: 20 };
 
   let QUIZ = [];
   function quizQ(id) {
@@ -831,12 +861,12 @@
     win: { n: 'Chi vince?', d: 'Board e mani scoperte, tocca il vincitore', g: 'p', k: 'win' },
     name: { n: 'Trova il punto', d: 'Nomina il punto e tocca le 5 carte', g: 'p', k: 'name' },
     board: { n: 'Leggi il board', d: 'Coppia, colore, scala e punto massimo', g: 'p', k: 'board' },
-    side: { n: 'Side pot', d: 'Dividi gli all-in nei piatti giusti', g: 'c', k: 'num' },
-    pay: { n: 'Pagamenti', d: 'Chi prende cosa, anche con i pareggi', g: 'c', k: 'num' },
+    side: { n: 'Side pot', d: 'Conta gli all-in e sposta le chips nei piatti', g: 'c', k: 'num' },
+    pay: { n: 'Pagamenti', d: 'Spingi le chips ai vincitori, anche con i pareggi', g: 'c', k: 'num' },
     raise: { n: 'Rilancio minimo', d: 'Anche con all-in incompleti', g: 'c', k: 'num' },
     call: { n: 'Quanto chiamare', d: 'Quanto manca a chi ha già messo', g: 'c', k: 'num' },
-    pot: { n: 'Conta il piatto', d: 'Bui, ante, call e fold', g: 'c', k: 'num' },
-    odd: { n: 'Fiche dispari', d: 'Piatti divisi e bottone', g: 'c', k: 'num' },
+    pot: { n: 'Conta il piatto', d: 'Raccogli le puntate e conta le chips', g: 'c', k: 'num' },
+    odd: { n: 'Fiche dispari', d: 'Dividi le chips, cambio compreso', g: 'c', k: 'num' },
     chips: { n: 'Conta lo stack', d: 'Pile da 20, come al tavolo', g: 'c', k: 'num' },
     push: { n: 'Call o rilancio?', d: 'Gettoni in silenzio e regola del 50%', g: 'a', k: 'choice' },
     reopen: { n: 'Riapre i rilanci?', d: 'All-in corti, regola 49', g: 'a', k: 'choice' },
@@ -854,7 +884,13 @@
 
   // ---------- grading: same input, same explanation, also for the review list ----------
   function grade(type, q, a) {
-    const k = TYPES[type].k;
+    const k = kindOf(type, q);
+    if (k === 'felt') {
+      if (!a.z) return null;
+      const vals = (q.fields || []).map((f, i) => parseNum(a.vals && a.vals[i] != null ? a.vals[i] : ''));
+      if (vals.some(Number.isNaN)) return null;
+      return { ok: feltOk(q.felt, a.z) && (q.fields || []).every((f, i) => vals[i] === f.answer), steps: q.steps, tip: q.tip, rules: q.rules };
+    }
     if (k === 'win') {
       if (!a.seats || !a.seats.length) return null;
       const { board, holes } = q, w = winners(board, holes);
@@ -910,7 +946,7 @@
 
   const api = {
     RANKS, SUITS, SYM, SUITN, CATS, RN, rv, fmt, parseNum, deck, deckMinus, shuffle, pick, eval5, cmp, best, describe, winners, boardInfo, boardFacts, straightWindow,
-    computePots, payouts, splitPot, classifyPush, sideScenario, trapBoard, GEN, TYPES, GROUPS, grade, quizQ, verdictLine, LV, SLOTS, solve, TARGET,
+    computePots, payouts, splitPot, classifyPush, chipsFor, zoneSum, moveChips, breakChips, feltOk, kindOf, potName, DENOMS, sideScenario, trapBoard, GEN, TYPES, GROUPS, grade, quizQ, verdictLine, LV, SLOTS, solve, TARGET,
     setQuiz: list => { QUIZ = list; }, quizList: () => QUIZ, ringFrom, seatAt
   };
   root.DT = api;

@@ -156,7 +156,8 @@ ok('push senza puntate: mai sotto il minimo', () => {
 });
 
 function rightAnswer(type, q) {
-  const k = L.TYPES[type].k;
+  const k = L.kindOf(type, q);
+  if (k === 'felt') return L.solve(type, q);
   if (k === 'win') return { seats: L.winners(q.board, q.holes).win };
   if (k === 'name') { const b = L.best(q.board.concat(q.hole)); return { cat: b.score[0], cards: b.five }; }
   if (k === 'board') { const i = L.boardInfo(q.board); return { paired: i.paired, flush: i.flush, straight: i.straight, cat: i.nut[0] }; }
@@ -166,7 +167,8 @@ function rightAnswer(type, q) {
   return { roles: q.answer };
 }
 function wrongAnswer(type, q) {
-  const a = rightAnswer(type, q), k = L.TYPES[type].k;
+  const a = rightAnswer(type, q), k = L.kindOf(type, q);
+  if (k === 'felt') return { ...a, z: { ...a.z, p0: [...a.z.p0, 100] } };
   if (k === 'win') return { seats: a.seats.includes(0) && a.seats.length === 1 ? [1] : [0] };
   if (k === 'name' || k === 'board') return { ...a, cat: (a.cat + 1) % 9 };
   if (k === 'num') return { vals: q.fields.map(f => String(f.answer + 100)) };
@@ -232,6 +234,26 @@ ok('quiz TDA: struttura e rimandi', () => {
     assert(x.q.length > 10 && x.why.length > 10 && x.cat);
   });
   console.log('     domande:', QUIZ.length);
+});
+ok('chips sul tavolo: si conservano, il cambio arriva a ogni importo, le mosse non creano fiche', () => {
+  for (const lv of LEVELS) for (const type of ['side', 'pay', 'pot', 'odd']) for (let i = 0; i < 800; i++) {
+    const q = L.GEN[type](lv), f = q.felt, sum = z => Object.values(z).reduce((a, c) => a + L.zoneSum(c), 0), js = JSON.stringify(q);
+    assert.strictEqual(sum(f.z), Object.values(f.want).reduce((a, b) => a + b, 0), 'conservazione ' + js);
+    Object.values(f.want).forEach(w => assert.strictEqual(w % f.min, 0, 'importo non raggiungibile ' + js));
+    Object.values(f.z).flat().forEach(c => assert(L.DENOMS.includes(c) && c >= f.min, 'taglio ' + js));
+    // Break everything down to the smallest chip, then deal it out with legal moves only: the answer must be reachable.
+    let z = JSON.parse(JSON.stringify(f.z));
+    for (const id of Object.keys(z)) for (let g = 0; g < 6; g++) z = L.breakChips(z, id, z[id].slice(), f.min);
+    assert.strictEqual(sum(z), sum(f.z), 'il cambio altera il totale ' + js);
+    const pool = Object.keys(z).flatMap(id => z[id].map(c => [id, c]));
+    for (const [id, w] of Object.entries(f.want)) { let need = w; while (need > 0) { const [from, c] = pool.pop(); z = L.moveChips(z, from, [c], '_' + id); need -= c; } assert.strictEqual(need, 0, 'resto ' + js); }
+    const done = {}; for (const id of Object.keys(f.want)) done[id] = z['_' + id] || [];
+    assert(L.feltOk(f, done), 'non raggiungibile ' + js);
+  }
+  assert.throws(() => L.moveChips({ a: [100], b: [] }, 'a', [500], 'b'));
+  assert.deepStrictEqual(L.breakChips({ a: [100] }, 'a', [100], 100), { a: [100] });
+  assert.deepStrictEqual(L.breakChips({ a: [1000] }, 'a', [1000], 1000), { a: [1000] });
+  assert.strictEqual(L.grade('pot', { fields: [{ answer: 1 }], steps: [], rules: [] }, { vals: ['1'] }).ok, true, 'vecchio errore salvato senza tavolo');
 });
 ok('solve(): la risposta calcolata viene sempre giudicata giusta', () => {
   for (const type of Object.keys(L.GEN)) for (let i = 0; i < 300; i++) {

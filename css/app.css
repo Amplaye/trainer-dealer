@@ -103,6 +103,30 @@ button.ts{min-height:44px;min-width:58px}
 .disc{width:17px;height:6px;border-radius:3px;border:1px solid #0008;margin-top:-1px}
 .col b{font-size:.72rem;background:var(--deep);border-radius:5px;padding:0 5px;white-space:nowrap}
 
+/* chips on the felt */
+.felt2{display:grid;grid-template-columns:1fr 1.15fr 1fr;grid-template-rows:repeat(4,auto);gap:5px;padding:9px 9px 32px;position:relative;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:manipulation;border-radius:26px;background:radial-gradient(ellipse at center,#1f8a5f 0%,#12694a 70%,#0d5439 100%);border:8px solid #6b4226;margin:8px 0}
+.felt2 .you{bottom:2px}
+.pots{grid-area:2/2/5/3;min-width:0;display:flex;flex-direction:column;gap:5px}
+.zone{min-height:74px;min-width:0;border:1px dashed #fff6;border-radius:10px;padding:3px;display:flex;flex-direction:column;gap:3px;color:#fff}
+.zone.potz{border:2px solid var(--gold);flex:1}
+.zone.from{border-color:var(--gold);box-shadow:0 0 0 2px var(--gold)}
+.zone.good{border:2px solid var(--ok)}
+.zone.wrong{border:2px solid var(--bad)}
+.zh{display:flex;flex-wrap:wrap;gap:3px;align-items:center;background:none;border:0;color:#fff;font:inherit;font-size:.72rem;padding:2px;min-height:24px;text-align:left;touch-action:none}
+.zh .dbtn{width:16px;height:16px;font-size:.62rem;font-style:normal}
+.fps{display:flex;flex-wrap:wrap;gap:3px;align-items:flex-end}
+.fp{display:flex;flex-direction:column;align-items:center;gap:1px;background:none;border:0;padding:2px 1px;min-width:30px;min-height:32px;justify-content:flex-end;color:#fff;touch-action:none;font:inherit}
+.fp b{font-size:.62rem;line-height:1}
+.fstack{display:flex;flex-direction:column-reverse}
+.fd{display:block;width:26px;height:5px;border-radius:3px;border:1px solid #0009;margin-top:-1px}
+.fd:nth-child(5n+1):not(:first-child){margin-bottom:2px}
+.lifted{opacity:.3}
+.ghost{position:fixed;left:0;top:0;z-index:60;pointer-events:none;filter:drop-shadow(0 4px 6px #000a)}
+.tray{display:flex;gap:8px;align-items:stretch;margin-bottom:8px}
+.hand{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 8px;min-height:56px}
+.change{min-width:84px}
+.addpot{min-height:44px}
+
 /* question and result */
 .q{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
 .q ul{margin:6px 0 0;padding-left:20px}
