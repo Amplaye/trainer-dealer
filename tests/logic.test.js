@@ -233,6 +233,41 @@ ok('quiz TDA: struttura e rimandi', () => {
   });
   console.log('     domande:', QUIZ.length);
 });
+ok('solve(): la risposta calcolata viene sempre giudicata giusta', () => {
+  for (const type of Object.keys(L.GEN)) for (let i = 0; i < 300; i++) {
+    const q = L.GEN[type]('normal');
+    assert.strictEqual(L.grade(type, q, L.solve(type, q)).ok, true, 'solve ' + type);
+    assert(L.TARGET[type] > 0, 'obiettivo di tempo ' + type);
+  }
+});
+ok('misdeal, fuori turno, parole e gesti: tutti i casi escono e le risposte tornano', () => {
+  const seen = {};
+  for (let i = 0; i < 6000; i++) {
+    const m = L.GEN.misdeal('normal'), o = L.GEN.oot('normal'), w = L.GEN.words('normal');
+    const good = q => q.options.find(x => x.ok).t;
+    const key = s => s.replace(/[0-9.]+/g, '#'); seen['m:' + key(m.steps[0])] = 1; seen['o:' + key(o.steps[o.steps.length - 1])] = 1; seen['w:' + key(w.steps[0])] = 1;
+    // misdeal: after substantial action only the fouled deck changes anything
+    if (/Fold e call sono azione sostanziale/.test(m.steps[0])) assert(/^Nessun misdeal/.test(good(m)));
+    if (/Due carte identiche/.test(m.steps[0])) assert(/^Mazzo compromesso/.test(good(m)));
+    if (/^Misdeal/.test(good(m)) || /^Nessun misdeal/.test(good(m))) assert(m.options.length === 3);
+    // out of turn: the fold is the only action that always stays
+    if (/folda fuori turno/.test(o.lines.join(' '))) assert(/^Sì, un fold/.test(good(o)));
+    if (/Heads-up/.test(o.head)) assert(/non rilanciare/.test(good(o)));
+  }
+  const n = k => Object.keys(seen).filter(x => x.startsWith(k)).length;
+  assert.strictEqual(n('m:'), 11, 'tipi di misdeal ' + n('m:')); assert.strictEqual(n('o:'), 4, 'tipi di fuori turno'); assert.strictEqual(n('w:'), 9, 'tipi di parole ' + n('w:'));
+});
+ok('giri di penalità: giocatori × giri', () => {
+  for (let i = 0; i < 3000; i++) {
+    const q = L.GEN.penalty(LEVELS[i % 3]), n = +q.lines[0].match(/in (\d+)/)[1], r = +q.lines[1].match(/dà (\d+)/)[1];
+    assert.strictEqual(q.fields[0].answer, n * r); assert.strictEqual(q.table.seats.length, n);
+  }
+});
+ok('quiz: la risposta giusta non si riconosce dalla lunghezza', () => {
+  const longest = QUIZ.filter(x => x.a.slice(1).every(t => x.a[0].length > t.length)).length;
+  console.log('     giusta strettamente più lunga:', longest, 'su', QUIZ.length);
+  assert(longest / QUIZ.length < .55, 'troppe risposte giuste sono le più lunghe');
+});
 ok('dati TDA completi', () => {
   assert.deepStrictEqual([TDA.order.rules.length, TDA.order.procedures.length, TDA.order.illustrations.length, TDA.order.glossary.length], [74, 29, 15, 49]);
   Object.values(TDA.items).forEach(x => { assert(x.title && x.text, x.id); x.red.forEach(([a, b]) => assert(a >= 0 && b <= x.text.length && a < b, x.id)); });

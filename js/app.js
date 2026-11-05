@@ -1,12 +1,13 @@
 'use strict';
 // User interface. No innerHTML anywhere: every element is built with h(), text goes in as text.
-const APP_VERSION = '2.0.1';
-const { CATS, SYM, TYPES, GROUPS, GEN, SLOTS, fmt, parseNum, rv, shuffle, pick, grade, quizQ, winners, best, boardInfo } = DT;
+const APP_VERSION = '2.1.0';
+const { CATS, SYM, TYPES, GROUPS, GEN, SLOTS, TARGET, fmt, parseNum, rv, shuffle, pick, grade, quizQ, winners, best, boardInfo } = DT;
 DT.setQuiz(QUIZ);
 
 // ---------- storage ----------
 const KEY = 'trainer-dealer-v2', OLD_KEY = 'trainer-dealer-v1';
-const blankStore = () => ({ v: 2, level: 'auto', focus: 'all', goal: 20, vibrate: true, lang: 'it', stats: {}, days: {}, srs: [], quizSeen: {}, marks: [], resume: null });
+const blankStore = () => ({ v: 2, level: 'auto', focus: 'all', goal: 20, vibrate: true, lang: 'it', size: 'm', stats: {}, days: {}, srs: [], srsDropped: 0, quizSeen: {}, marks: [], runs: [], lastExport: 0, resume: null });
+const PASS = 85, SRS_MAX = 300, BACKUP_DAYS = 30, SIZES = { m: '16px', l: '18px', xl: '20px' };
 let volatile = null;
 function load() {
   try {
@@ -25,6 +26,10 @@ function load() {
 }
 function save() { volatile = store; try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) { /* private mode: keeps working in memory */ } }
 let store = load();
+const applySize = () => { document.documentElement.style.fontSize = SIZES[store.size] || SIZES.m; };
+applySize();
+let persisted = null;
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().then(g => { persisted = g; }).catch(() => {});
 let ses = null, cur = null, timer = null, lastSummary = null;
 
 // ---------- DOM helpers ----------
@@ -125,7 +130,10 @@ function srsResult(q, type, ok, srsId) {
     else { it.box = 0; it.due = Date.now() + SRS_WAIT[0]; }
   } else if (!ok) {
     store.srs.unshift({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), type, q, box: 0, due: Date.now() + SRS_WAIT[0] });
-    store.srs = store.srs.slice(0, 200);
+    if (store.srs.length > SRS_MAX) {
+      store.srsDropped += store.srs.length - SRS_MAX; store.srs = store.srs.slice(0, SRS_MAX);
+      toast('Il ripasso è pieno: ho scartato l\'errore più vecchio.');
+    }
   }
 }
 
@@ -146,18 +154,35 @@ function nextQuiz(ids) {
 }
 function make(type, ids) { return type === 'quiz' ? nextQuiz(ids) : GEN[type](levelFor(type)); }
 function start(mode, extra = {}) {
-  ses = { mode, total: null, done: 0, ok: 0, ms: 0, miss: {}, log: [], exam: false, ...extra };
+  ses = { mode, total: null, done: 0, ok: 0, ms: 0, miss: {}, log: [], exam: false, timed: false, timeouts: 0, ...extra };
   if (mode.startsWith('mix')) ses.total = +mode.slice(3);
+  if (mode.startsWith('timed')) { ses.total = +mode.slice(5); ses.timed = true; }
   if (mode === 'exam') { ses.total = 20; ses.exam = true; }
   if (mode === 'review') { ses.queue = dueItems().slice(0, 20); ses.total = ses.queue.length; }
   beginPlay(); next();
 }
 function beginPlay() {
   clearInterval(timer);
-  timer = setInterval(() => { const t = document.getElementById('clock'); if (t && cur && !cur.res) t.textContent = Math.floor((Date.now() - cur.t0) / 1000) + 's'; }, 500);
+  timer = setInterval(tick, 500);
   if (location.hash !== '#/play') location.hash = '#/play';
   view = 'play';
   setChrome();
+}
+// Plain sessions count up; the timed session counts down from the target and marks the question missed at zero.
+function tick() {
+  const t = document.getElementById('clock'); if (!t || !cur || !ses || cur.res) return;
+  const s = Math.floor((Date.now() - cur.t0) / 1000);
+  if (!ses.timed) { t.textContent = s + 's'; return; }
+  const left = TARGET[cur.type] - s;
+  t.textContent = Math.max(0, left) + 's'; t.className = left <= 5 ? 'late' : '';
+  if (left <= 0) timeout();
+}
+function timeout() {
+  if (!cur || cur.res) return;
+  const r = grade(cur.type, cur.q, DT.solve(cur.type, cur.q));
+  r.ok = false; r.steps = ['Tempo scaduto. Questa era la risposta giusta.', ...r.steps];
+  ses.timeouts++;
+  finishQ(r);
 }
 function next(sameType) {
   if (!sameType && ses.total && ses.done >= ses.total) return summary();
@@ -165,8 +190,8 @@ function next(sameType) {
   if (sameType) { type = cur.type; q = make(type); ses.total = ses.total ? ses.total + 1 : null; }
   else if (ses.mode === 'review') { const it = ses.queue.shift(); type = it.type; q = it.q; srsId = it.id; }
   else if (ses.mode === 'rule') { type = 'quiz'; q = nextQuiz(ses.ids); }
-  else if (ses.mode.startsWith('mix') || ses.mode === 'exam') {
-    const due = ses.mode !== 'exam' && Math.random() < .25 ? dueItems().filter(x => !ses.log.some(l => l.srsId === x.id)) : [];
+  else if (ses.mode.startsWith('mix') || ses.timed || ses.mode === 'exam') {
+    const due = ses.mode !== 'exam' && !ses.timed && Math.random() < .25 ? dueItems().filter(x => !ses.log.some(l => l.srsId === x.id)) : [];
     if (due.length) { const it = pick(due); type = it.type; q = it.q; srsId = it.id; }
     else { type = pickMix(); q = make(type); }
   } else { type = ses.mode; q = make(type); }
@@ -179,13 +204,13 @@ function next(sameType) {
 function setCur(c) { cur = c; cur.field = 0; cur.role = 'bb'; }
 function persist() {
   if (!ses) { store.resume = null; save(); return; }
-  const { mode, total, done, ok, ms, miss, exam, ids, queue } = ses;
-  store.resume = { mode, total, done, ok, ms, miss, exam, ids, queue: queue ? queue.map(x => x.id) : undefined, log: ses.log.slice(-30), cur: cur ? { type: cur.type, q: cur.q, srsId: cur.srsId } : null };
+  const { mode, total, done, ok, ms, miss, exam, ids, queue, timeouts } = ses;
+  store.resume = { mode, total, done, ok, ms, miss, exam, timeouts, ids, queue: queue ? queue.map(x => x.id) : undefined, log: ses.log.slice(-30), cur: cur ? { type: cur.type, q: cur.q, srsId: cur.srsId } : null };
   save();
 }
 function resume() {
   const r = store.resume; if (!r) return;
-  ses = { ...r, cur: undefined, log: r.log || [], queue: r.queue ? store.srs.filter(x => r.queue.includes(x.id)) : undefined };
+  ses = { ...r, timed: r.mode.startsWith('timed'), timeouts: r.timeouts || 0, cur: undefined, log: r.log || [], queue: r.queue ? store.srs.filter(x => r.queue.includes(x.id)) : undefined };
   beginPlay();
   if (r.cur) { setCur({ ...r.cur, a: { cards: [], seats: [], vals: {}, roles: {} }, t0: Date.now(), res: null }); render(); window.scrollTo(0, 0); } else next();
 }
@@ -193,11 +218,13 @@ function header() {
   const info = ses.total ? `${Math.min(ses.done + (cur.res ? 0 : 1), ses.total)}/${ses.total}` : `${ses.ok}/${ses.done} giuste`;
   return h('div', { class: 'top' },
     h('button', { class: 'back', 'data-act': 'exit' }, '‹ Esci'),
-    h('div', { class: 'info' }, `${TYPES[cur.type].n} · ${info} · `, h('span', { id: 'clock' }, cur.res ? (cur.res.ms / 1000).toFixed(1) + 's' : '0s')));
+    h('div', { class: 'info' }, `${TYPES[cur.type].n} · ${info} · `, h('span', { id: 'clock' }, cur.res ? (cur.res.ms / 1000).toFixed(1) + 's' : ses.timed ? TARGET[cur.type] + 's' : '0s')));
 }
 function resultEl(r) {
-  const k = store.lang, chips = (r.rules || []).map(id => h('button', { class: 'chip', 'data-act': 'rule', 'data-v': id }, ruleLabel(id)));
+  const chips = (r.rules || []).map(id => h('button', { class: 'chip', 'data-act': 'rule', 'data-v': id }, ruleLabel(id)));
+  const goal = TARGET[cur.type], fast = r.ms != null && r.ms <= goal * 1000;
   return h('div', { class: `res ${r.ok ? 'good' : 'wrong'}`, role: 'status' }, h('b', { class: 't' }, r.ok ? 'Giusto' : 'Sbagliato'),
+    r.ms ? h('div', { class: `time ${fast ? 'fast' : 'slow'}` }, `${(r.ms / 1000).toFixed(1)}s · obiettivo ${goal}s`) : null,
     r.steps.length > 1 ? h('ol', null, r.steps.map(s => h('li', null, rich(s)))) : h('div', null, rich(r.steps[0])),
     r.tip && h('div', { class: 'tip' }, h('b', null, 'Da ricordare: '), rich(r.tip)),
     chips.length ? h('div', { class: 'chips' }, chips) : null);
@@ -310,6 +337,9 @@ function confirmQ() {
   if (k === 'num') cur.q.fields.forEach((f, i) => { cur.a.vals[i] = document.getElementById('f' + i).value.trim(); });
   const r = grade(cur.type, cur.q, cur.a);
   if (!r) { document.getElementById('hint').textContent = 'Manca ancora qualcosa da rispondere.'; return; }
+  finishQ(r);
+}
+function finishQ(r) {
   r.ms = Date.now() - cur.t0;
   record(cur.type, r.ok, r.ms);
   if (cur.q.quiz) { const s = store.quizSeen[cur.q.id] || (store.quizSeen[cur.q.id] = { n: 0, ok: 0 }); s.n++; if (r.ok) s.ok++; }
@@ -325,15 +355,29 @@ function confirmQ() {
 }
 function summary() {
   clearInterval(timer);
-  const s = ses; lastSummary = s; ses = null; cur = null; store.resume = null; save();
+  const s = ses; lastSummary = s; ses = null; cur = null; store.resume = null;
+  const kind = s.exam ? 'exam' : s.timed ? 'timed' : null;
+  if (kind && s.done) store.runs = (store.runs || []).concat({ k: kind, t: Date.now(), n: s.done, ok: s.ok, ms: s.ms, to: s.timeouts || 0 }).slice(-60);
+  save();
   renderSummary();
+}
+const pctOf = r => r.n ? Math.round(r.ok / r.n * 100) : 0;
+function runsTable(kind) {
+  const rs = (store.runs || []).filter(r => r.k === kind).slice(-5).reverse();
+  if (!rs.length) return null;
+  return h('table', null, h('tr', null, ['Data', 'Giuste', 'Secondi a domanda', kind === 'timed' ? 'Scadute' : ''].map(x => h('th', null, x))),
+    rs.map(r => h('tr', null, h('td', null, new Date(r.t).toLocaleDateString('it-IT', { day: 'numeric', month: 'numeric' })), h('td', { class: kind === 'exam' ? (pctOf(r) >= PASS ? 'fast' : 'slow') : '' }, pctOf(r) + '%'), h('td', null, (r.ms / r.n / 1000).toFixed(1)), h('td', null, kind === 'timed' ? String(r.to || 0) : ''))));
 }
 function renderSummary() {
   const s = lastSummary, pct = s.done ? Math.round(s.ok / s.done * 100) : 0, avg = s.done ? (s.ms / s.done / 1000).toFixed(1) : '0';
   const m = Object.keys(s.miss).sort((a, b) => s.miss[b] - s.miss[a]);
   const wrong = s.log.map((l, i) => ({ l, i })).filter(x => !x.l.ok);
   view = 'summary'; setChrome();
+  const kind = s.exam ? 'exam' : s.timed ? 'timed' : null, hist = kind && runsTable(kind);
   show(h('h1', null, 'Sessione finita'), h('p', { class: 'big' }, pct + '%'), h('p', null, `${s.ok} giuste su ${s.done}, ${avg} secondi a domanda.`),
+    s.exam ? h('p', { class: pct >= PASS ? 'verdict fast' : 'verdict slow' }, pct >= PASS ? `Promosso: la soglia è ${PASS}%.` : `Non ancora: la soglia è ${PASS}%, te ne mancano ${Math.max(1, Math.ceil(PASS / 100 * s.done) - s.ok)}.`) : null,
+    s.timed ? h('p', null, s.timeouts ? `${s.timeouts} ${s.timeouts === 1 ? 'domanda scaduta' : 'domande scadute'} per il tempo.` : 'Nessuna domanda scaduta.') : null,
+    hist ? [h('h2', null, s.exam ? 'Le ultime prove' : 'Le ultime sessioni a tempo'), hist] : null,
     m.length ? [h('h2', null, 'Dove hai sbagliato'), h('table', null, m.map(k => h('tr', null, h('td', null, TYPES[k].n), h('td', null, String(s.miss[k])))))] : h('p', null, 'Nessun errore.'),
     wrong.length ? [h('h2', null, 'Rivedi gli errori'), h('div', { class: 'list' }, wrong.map(({ l, i }) => h('button', { class: 'row', 'data-act': 'seelog', 'data-v': i }, h('span', { class: 'x' }, TYPES[l.type].n, h('span', { class: 'snip' }, (l.q.lines && l.q.lines[0]) || 'Vedi carte e spiegazione')))))] : null,
     wrong.length ? h('p', { class: 'small' }, 'Questi errori tornano da soli nel ripasso, a intervalli sempre più lunghi.') : null,
@@ -405,7 +449,7 @@ function tdaList() {
 }
 function renderTDAList() { const box = document.getElementById('tdalist'); if (box) box.replaceChildren(...[tdaList()].flat(Infinity).filter(Boolean)); }
 function viewTDA() {
-  show(h('h1', null, 'Regolamento TDA 2026'), h('p', { class: 'small' }, 'Sta tutto sul telefono e funziona anche senza rete.'), h('p', { class: 'small', id: 'tdaload' }, 'Carico il regolamento…'));
+  show(h('h1', null, 'Regolamento TDA 2026'), h('p', { class: 'small' }, 'Sta tutto sul telefono e funziona anche senza rete.'), h('p', { class: 'small', id: 'tdaload' }, 'Carico il regolamento…'), h('div', { class: 'meter ind', role: 'progressbar', 'aria-label': 'Caricamento' }, h('i')));
   loadTDA().then(() => {
     if (view !== 'tda') return;
     const tabs = h('div', { class: 'seg scroll' }, Object.keys(TDA_TABS).map(k => h('button', { class: `btn ${tdaTab === k ? 'on' : ''}`, 'data-act': 'tdatab', 'data-v': k }, TDA_TABS[k])));
@@ -493,6 +537,12 @@ function tile(k) {
   const pct = s && a != null ? Math.round(a * 100) : null;
   return h('button', { class: 'tile', 'data-act': 'start', 'data-v': k }, h('b', null, TYPES[k].n), h('span', null, TYPES[k].d), pct != null ? [meter(pct), h('span', null, `${pct}% giuste nelle ultime`)] : null);
 }
+function lastRun(kind) {
+  const r = (store.runs || []).filter(x => x.k === kind).pop();
+  return r ? h('span', { class: kind === 'exam' ? (pctOf(r) >= PASS ? 'fast' : 'slow') : '' }, `Ultima volta: ${pctOf(r)}%`) : null;
+}
+const totalAnswered = () => Object.values(store.stats).reduce((a, s) => a + s.n, 0);
+const backupDue = () => totalAnswered() >= 30 && Date.now() - (store.lastExport || 0) > BACKUP_DAYS * 864e5;
 function viewHome() {
   const keys = Object.keys(TYPES), st = streak(), d = store.days[today()], doneToday = d ? d.n : 0, due = dueItems().length, r = store.resume;
   const lv = (v, t) => h('button', { class: `btn ${store.level === v ? 'on' : ''}`, 'data-act': 'level', 'data-v': v }, t);
@@ -501,12 +551,15 @@ function viewHome() {
     h('h1', null, 'Trainer Dealer'),
     h('p', null, st ? `${st} ${st === 1 ? 'giorno' : 'giorni'} di fila · ` : '', `Oggi ${doneToday}/${store.goal}`), meter(doneToday / store.goal * 100),
     r ? h('button', { class: 'tile alert', style: 'margin-top:12px', 'data-act': 'resume' }, h('b', null, 'Riprendi da dove eri'), h('span', null, r.total ? `${r.done} di ${r.total} fatte` : `${r.done} fatte, ${TYPES[r.cur ? r.cur.type : 'win'].n}`)) : null,
+    backupDue() ? h('button', { class: 'tile alert', style: 'margin-top:12px', 'data-act': 'export' }, h('b', null, 'Salva i tuoi progressi'), h('span', null, store.lastExport ? `Non fai il backup da ${Math.floor((Date.now() - store.lastExport) / 864e5)} giorni. Se cambi telefono o il browser pulisce i dati, li perdi.` : 'Non hai mai fatto il backup. Se cambi telefono o il browser pulisce i dati, perdi tutto.')) : null,
     h('h2', null, 'Hai un momento? Quante domande?'),
     h('div', { class: 'starts' }, startBtn(5, '2 minuti'), startBtn(10, '5 minuti'), startBtn(20, '10 minuti')),
     h('div', { class: 'seg scroll', style: 'margin-top:10px' }, Object.keys(FOCUS).map(k => h('button', { class: `btn ${store.focus === k ? 'on' : ''}`, 'data-act': 'focus', 'data-v': k }, FOCUS[k]))),
     h('div', { class: 'tiles', style: 'margin-top:10px' },
-      h('button', { class: `tile ${due ? 'alert' : ''}`, 'data-act': 'start', 'data-v': 'review', disabled: !due }, h('b', null, 'Ripasso errori'), h('span', null, due ? `${due} da rifare adesso` : store.srs.length ? `${store.srs.length} in attesa, tornano da soli` : 'Nessun errore da rifare')),
-      h('button', { class: 'tile', 'data-act': 'start', 'data-v': 'exam' }, h('b', null, 'Prova senza aiuti'), h('span', null, '20 domande, le spiegazioni solo alla fine'))),
+      h('button', { class: `tile ${due ? 'alert' : ''}`, 'data-act': 'start', 'data-v': 'review', disabled: !due }, h('b', null, 'Ripasso errori'), h('span', null, due ? `${due} da rifare adesso` : store.srs.length ? `${store.srs.length} in attesa, tornano da soli` : 'Nessun errore da rifare'),
+        store.srs.length >= SRS_MAX * .9 ? h('span', { class: 'warnline' }, `Coda quasi piena (${store.srs.length}/${SRS_MAX}): poi spariscono i più vecchi`) : null),
+      h('button', { class: 'tile', 'data-act': 'start', 'data-v': 'timed10' }, h('b', null, 'A tempo'), h('span', null, '10 domande con il conto alla rovescia'), lastRun('timed')),
+      h('button', { class: 'tile', 'data-act': 'start', 'data-v': 'exam' }, h('b', null, 'Prova senza aiuti'), h('span', null, `20 domande, spiegazioni alla fine, si passa con ${PASS}%`), lastRun('exam'))),
     ['p', 'c', 'a', 't'].map(g => [h('h2', null, GROUPS[g]), h('div', { class: 'tiles' }, keys.filter(k => TYPES[k].g === g).map(tile))]),
     h('h2', null, 'Difficoltà'),
     h('div', { class: 'seg' }, lv('auto', 'Automatica'), lv('easy', 'Facile'), lv('normal', 'Normale'), lv('hard', 'Difficile')),
@@ -519,9 +572,19 @@ function viewStats() {
   let max = 1; const days = [];
   for (let i = 0; i < 14; i++) { const k = dayKey(d), v = store.days[k] ? store.days[k].n : 0; days.push({ v, wd: 'DLMMGVS'[d.getDay()], k }); max = Math.max(max, v); d.setDate(d.getDate() + 1); }
   const rows = Object.keys(TYPES).map(k => {
-    const s = store.stats[k], a = accuracy(k);
-    return h('tr', null, h('td', null, TYPES[k].n), h('td', null, String(s ? s.n : 0)), h('td', null, a != null ? Math.round(a * 100) + '%' : '–'), h('td', null, s && s.n ? (s.ms / s.n / 1000).toFixed(1) + 's' : '–'));
+    const s = store.stats[k], a = accuracy(k), avg = s && s.n ? s.ms / s.n / 1000 : null;
+    return h('tr', null, h('td', null, TYPES[k].n), h('td', null, String(s ? s.n : 0)), h('td', null, a != null ? Math.round(a * 100) + '%' : '–'),
+      h('td', { class: avg == null ? '' : avg <= TARGET[k] ? 'fast' : 'slow' }, avg == null ? '–' : `${avg.toFixed(0)}s / ${TARGET[k]}s`));
   });
+  // Accuracy by quiz topic, from the per-question counters.
+  const topics = {};
+  QUIZ.forEach(x => { const t = topics[x.cat] || (topics[x.cat] = { tot: 0, seen: 0, n: 0, ok: 0 }), s = store.quizSeen[x.id]; t.tot++; if (s && s.n) { t.seen++; t.n += s.n; t.ok += s.ok; } });
+  const topicRows = Object.keys(topics).map(c => ({ c, ...topics[c] })).filter(t => t.n).sort((a, b) => a.ok / a.n - b.ok / b.n)
+    .map(t => h('tr', null, h('td', null, t.c), h('td', null, `${t.seen}/${t.tot}`), h('td', { class: t.ok / t.n >= .85 ? 'fast' : t.ok / t.n < .6 ? 'slow' : '' }, Math.round(t.ok / t.n * 100) + '%')));
+  // Accuracy per week, last 8 weeks (Monday to Sunday).
+  const wk = []; { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - 49);
+    for (let i = 0; i < 8; i++) { const from = new Date(d); let n = 0, ok = 0; for (let j = 0; j < 7; j++) { const x = store.days[dayKey(d)]; if (x) { n += x.n; ok += x.ok; } d.setDate(d.getDate() + 1); } wk.push({ n, ok, lbl: `${from.getDate()}/${from.getMonth() + 1}` }); } }
+  const exams = runsTable('exam'), timed = runsTable('timed');
   const weak = Object.keys(TYPES).filter(k => store.stats[k] && store.stats[k].n >= 5 && accuracy(k) != null).sort((a, b) => accuracy(a) - accuracy(b)).slice(0, 3);
   show(h('h1', null, 'Progressi'),
     h('div', { class: 'stats', style: 'margin-top:10px' },
@@ -531,8 +594,14 @@ function viewStats() {
     h('h2', null, 'Domande al giorno, ultime 2 settimane'),
     h('div', { class: 'days' }, days.map(x => h('div', { class: `day ${x.v ? '' : 'none'}`, title: `${x.k}: ${x.v} domande` }, x.v ? h('em', null, String(x.v)) : null, h('i', { style: `height:${Math.max(3, x.v / max * 78)}%` })))),
     h('div', { class: 'daylbl' }, days.map(x => h('span', null, x.wd))),
+    wk.some(x => x.n) ? [h('h2', null, 'Percentuale di giuste, per settimana'),
+      h('div', { class: 'days' }, wk.map(x => h('div', { class: `day ${x.n ? '' : 'none'}`, title: `${x.lbl}: ${x.n} domande` }, x.n ? h('em', null, Math.round(x.ok / x.n * 100) + '%') : null, h('i', { style: `height:${x.n ? Math.max(3, x.ok / x.n * 78) : 3}%` })))),
+      h('div', { class: 'daylbl' }, wk.map(x => h('span', null, x.lbl)))] : null,
     weak.length ? [h('h2', null, 'Dove lavorare'), h('div', { class: 'tiles' }, weak.map(tile))] : null,
-    h('h2', null, 'Ultime 20 risposte per esercizio'),
+    topicRows.length ? [h('h2', null, 'Quiz TDA per argomento, dal più debole'), h('table', null, h('tr', null, ['Argomento', 'Viste', 'Giuste'].map(x => h('th', null, x))), topicRows)] : null,
+    exams ? [h('h2', null, `Prova senza aiuti (si passa con ${PASS}%)`), exams] : null,
+    timed ? [h('h2', null, 'Sessioni a tempo'), timed] : null,
+    h('h2', null, 'Ultime 20 risposte per esercizio, tempo medio e obiettivo'),
     h('table', null, h('tr', null, ['Esercizio', 'Fatte', 'Giuste', 'Tempo'].map(x => h('th', null, x))), rows));
 }
 let installEvent = null;
@@ -547,8 +616,12 @@ function viewSettings() {
     h('h2', null, 'Domande al giorno'), h('div', { class: 'seg' }, goal(10), goal(20), goal(30), goal(50)),
     h('h2', null, 'Vibrazione alla risposta'),
     h('div', { class: 'seg' }, h('button', { class: `btn ${store.vibrate ? 'on' : ''}`, 'data-act': 'vib', 'data-v': 1 }, 'Sì'), h('button', { class: `btn ${!store.vibrate ? 'on' : ''}`, 'data-act': 'vib', 'data-v': 0 }, 'No')),
+    h('h2', null, 'Dimensione del testo'),
+    h('div', { class: 'seg' }, [['m', 'Normale'], ['l', 'Grande'], ['xl', 'Molto grande']].map(([k, t]) => h('button', { class: `btn ${store.size === k ? 'on' : ''}`, 'data-act': 'size', 'data-v': k }, t))),
     h('h2', null, 'I tuoi dati'),
     h('p', { class: 'small' }, 'Restano solo su questo dispositivo. Per passarli su un altro esporta il file e importalo lì.'),
+    h('p', { class: 'small' }, store.lastExport ? `Ultimo backup: ${new Date(store.lastExport).toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' })}.` : 'Non hai ancora fatto nessun backup.'),
+    persisted === false || (isIOS() && !standalone()) ? h('p', { class: 'small' }, isIOS() && !standalone() ? 'Su iPhone, se l\'app non è sulla schermata Home, Safari può cancellare i dati dopo qualche giorno che non la apri. Installala, oppure esporta ogni tanto.' : 'Il browser non garantisce di tenere questi dati se manca spazio: esporta ogni tanto.') : null,
     h('button', { class: 'btn wide', 'data-act': 'export' }, 'Esporta i progressi'),
     h('button', { class: 'btn wide', 'data-act': 'import' }, 'Importa i progressi'),
     h('input', { type: 'file', id: 'importfile', accept: 'application/json', hidden: true }),
@@ -609,6 +682,7 @@ function onClick(e) {
     case 'level': store.level = v; save(); return viewHome();
     case 'goal': store.goal = +v; save(); return viewSettings();
     case 'vib': store.vibrate = v === '1'; save(); return viewSettings();
+    case 'size': store.size = v; save(); applySize(); return viewSettings();
     case 'confirm': return confirmQ();
     case 'next': return next();
     case 'same': return next(true);
@@ -652,10 +726,12 @@ function refreshRule() {
   const s = location.hash.match(/^#\/play\/r\/(.+)$/); if (s) openSheet(s[1]);
 }
 function exportData() {
+  store.lastExport = Date.now(); save();
   const data = JSON.stringify({ ...store, resume: null });
   const url = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
   const a = h('a', { href: url, download: `trainer-dealer-${today()}.json` }); document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+  if (view === 'home') viewHome(); else if (view === 'settings') viewSettings();
   toast('File salvato.');
 }
 function importData(file) {

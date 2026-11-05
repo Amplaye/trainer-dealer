@@ -1,7 +1,7 @@
 :root{--bg:#0f1f1a;--panel:#183029;--panel2:#20403a;--deep:#0d1c17;--line:#35604f;--text:#fff;--gold:#e6bd55;--ink:#1c1608;--ok:#4fd08f;--bad:#f4736a;--tabs:64px}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html{-webkit-text-size-adjust:100%}
-html,body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+html,body{margin:0;background:var(--bg);color:var(--text);font:1rem/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 #app{max-width:760px;margin:0 auto;padding:calc(12px + env(safe-area-inset-top)) 14px calc(var(--tabs) + 28px + env(safe-area-inset-bottom))}
 body.play #app{padding-bottom:calc(28px + env(safe-area-inset-bottom))}
 h1{font-size:1.55rem;line-height:1.2;margin:6px 0 2px}
@@ -40,6 +40,15 @@ button:focus-visible,input:focus-visible,a:focus-visible,summary:focus-visible{o
 .back{background:none;border:0;padding:8px 8px 8px 0;min-height:44px}
 .label{font-size:.9rem;margin-top:12px;margin-bottom:4px}
 .hint{color:var(--bad);margin-top:10px;min-height:1.4em}
+.fast{color:var(--ok)}
+.slow,.late{color:var(--bad)}
+.late{font-weight:700}
+.time{font-size:.9rem;font-weight:600;margin-bottom:6px}
+.verdict{font-weight:700;font-size:1.05rem}
+.tile .warnline{color:var(--gold);margin-top:6px}
+.meter.ind i{width:35%;animation:ind 1.1s ease-in-out infinite alternate}
+@keyframes ind{from{margin-left:0}to{margin-left:65%}}
+@media(prefers-reduced-motion:reduce){.meter.ind i{animation:none;width:100%}}
 .big{font-size:2.6rem;font-weight:700;color:var(--gold);font-variant-numeric:tabular-nums;line-height:1.1}
 
 /* bottom tabs */

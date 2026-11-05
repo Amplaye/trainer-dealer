@@ -702,6 +702,122 @@
     };
   }
 
+  // ---------- generators: irregularities, out-of-turn action and wording ----------
+  const optsOf = (right, ...wrong) => shuffle([{ t: right, ok: true }, ...wrong.map(t => ({ t, ok: false }))]);
+  const MIS = 'Misdeal: si rifà la mano identica (stesso bottone, stessi giocatori)', GO = 'Nessun misdeal: la mano prosegue';
+  const ASK = 'Misdeal solo se un giocatore lo chiede', FOUL = 'Mazzo compromesso: fermi il gioco e restituisci tutte le puntate';
+  function genMisdeal() {
+    const btn = rint(1, 9), t = mkTable(btn), sbS = seatAt(btn, 1), bbS = seatAt(btn, 2);
+    const [o1, o2] = shuffle([3, 4, 5, 6, 7, 8]).slice(0, 2).map(k => seatAt(btn, k)), [a1, a2] = [seatAt(btn, 3), seatAt(btn, 4)], tgt = seatAt(btn, 5);
+    st(t, sbS, { tag: 'SB' }); st(t, bbS, { tag: 'BB' });
+    const sa = (extra) => { st(t, a1, { tag: 'FOLD' }); st(t, a2, { tag: 'CHIAMA', bet: pick(BLINDS)[1] }); st(t, tgt, extra); };
+    const kinds = {
+      first2: () => { st(t, sbS, { note: 'carta scoperta' }); return { lines: [`Stai distribuendo. Scopri per errore la prima carta, quella dello small blind (posto ${sbS}).`], ok: MIS, wrong: [GO, ASK], steps: ['Una delle prime 2 carte uscite dal mazzo è stata scoperta per errore del dealer.', 'È uno dei casi di misdeal della regola 37-A.'] }; },
+      twoDown: () => { st(t, o1, { note: 'carta scoperta' }); st(t, o2, { note: 'carta scoperta' }); return { lines: [`Durante la distribuzione scopri per errore due carte coperte: una del posto ${o1} e una del posto ${o2}.`], ok: MIS, wrong: [GO, ASK], steps: ['Due carte coperte qualunque esposte per errore del dealer sono misdeal.', 'Regola 37-A, punto 6.'] }; },
+      box2: () => { st(t, o1, { note: 'carta boxed' }); st(t, o2, { note: 'carta boxed' }); return { lines: [`Finita la distribuzione, due carte risultano girate al contrario nel mazzo: una al posto ${o1} e una al posto ${o2}.`], ok: MIS, wrong: [GO, ASK], steps: ['Due o più carte boxed nella distribuzione iniziale sono misdeal.', 'Regola 37-A, punto 1.'] }; },
+      box1: () => { st(t, o1, { note: 'carta boxed' }); return { lines: [`Finita la distribuzione, una sola carta risulta girata al contrario: quella del posto ${o1}.`], ok: GO, wrong: [MIS, ASK], steps: ['La regola 37-A conta come misdeal 2 o più carte boxed nella distribuzione iniziale.', 'Una sola non basta.'] }; },
+      wrongSeat: () => { st(t, o1, { note: 'prima carta' }); return { lines: [`Dai la prima carta al posto ${o1}, invece che allo small blind (posto ${sbS}).`], ok: MIS, wrong: [GO, ASK], steps: ['La prima carta distribuita va allo small blind.', 'Se finisce al posto sbagliato è misdeal (regola 37-A).'] }; },
+      noHand: () => { st(t, o1, { tag: 'ELIMINATO' }); return { lines: [`Il posto ${o1} è stato eliminato nella mano precedente. Per distrazione gli dai due carte.`], ok: MIS, wrong: [GO, ASK], steps: ['Un posto eliminato non ha diritto a una mano.', 'Dare carte a un posto che non ne ha diritto è misdeal (regola 37-A).'] }; },
+      dealtOut: () => { st(t, o1, { note: 'saltato' }); return { lines: [`Salti per errore il posto ${o1}, che ha diritto alla mano.`], ok: MIS, wrong: [GO, ASK], steps: ['Un posto con diritto alla mano che resta senza carte è misdeal.', 'Regola 37-A.'] }; },
+      three: () => { st(t, o1, { note: '3 carte' }); return { lines: [`Finita la distribuzione ti accorgi che il posto ${o1}, che non è il bottone, ha ricevuto 3 carte. Nessuno ha ancora agito.`], ok: MIS, wrong: [GO, ASK], steps: ['Un numero sbagliato di carte a un giocatore è misdeal.', 'L\'unica eccezione è il bottone (regola 39).'] }; },
+      btn2: () => { st(t, btn, { note: '2 carte di fila' }); return { lines: [`Dai due carte consecutive al giocatore di bottone, il posto ${btn}.`], ok: GO, wrong: [MIS, ASK], steps: ['Il bottone può ricevere 2 carte consecutive.', 'Non è un caso di misdeal (regola 37-B).'] }; },
+      sa: () => { sa({ note: '3 carte' }); return { lines: [`Il posto ${a1} folda e il posto ${a2} chiama. Poi ti accorgi che il posto ${tgt} ha 3 carte.`], ok: GO, wrong: [MIS, ASK], steps: ['Fold e call sono azione sostanziale: un\'azione con gettoni più un\'altra azione (regola 38).', 'Dopo azione sostanziale non si può dichiarare misdeal, a meno che il mazzo sia compromesso (regola 37-D).'] }; },
+      foul: () => { sa({}); return { lines: [`Il posto ${a1} folda e il posto ${a2} chiama. Poi trovi nel mazzo due K di picche.`], ok: FOUL, wrong: [GO, MIS], steps: ['Due carte identiche rendono il mazzo compromesso.', 'Si ferma il gioco e si restituiscono tutte le puntate, anche dopo azione sostanziale (regola 37-E).'] }; }
+    };
+    const k = kinds[pick(Object.keys(kinds))]();
+    return { title: 'È misdeal?', head: 'Hold\'em, nuova mano.', table: t, lines: k.lines, options: optsOf(k.ok, ...k.wrong), steps: k.steps, tip: 'Dopo un misdeal la mano si rifà identica: il bottone non si muove e non entra nessun nuovo giocatore.', rules: ['R37', 'R38'] };
+  }
+  function genOOT() {
+    const [, bb] = pick(BLINDS.slice(0, 6)), btn = rint(1, 9), t = mkTable(btn);
+    const offs = shuffle([1, 2, 3, 4, 5, 6, 7, 8, 9]).slice(0, 4).sort((a, b) => a - b), P = offs.map(k => seatAt(btn, k));
+    t.seats.forEach(s => { if (!P.includes(s.n)) s.tag = 'FOLD'; });
+    const kind = pick(['call', 'raise', 'fold', 'hu']), X = bb * rint(2, 5);
+    if (kind === 'hu') {
+      const [A, B] = P; t.seats.forEach(s => { if (s.n !== A && s.n !== B) s.tag = 'FOLD'; else delete s.tag; });
+      st(t, A, { bet: X, tag: 'PUNTA', hot: true }); st(t, B, { tag: 'CHECK', note: 'fuori turno' });
+      return {
+        title: 'Cosa vale?', head: 'Heads-up, dopo il flop.', table: t,
+        lines: [`Tocca al posto ${A}, ma il posto ${B} fa check fuori turno.`, `Il posto ${A} agisce e punta ${fmt(X)}.`, `Cosa può fare il posto ${B}?`],
+        options: optsOf('Chiamare o foldare, ma non rilanciare in questo giro', 'Ha tutte le opzioni: il check fuori turno non vincola', 'Solo foldare', 'Rilanciare, ma solo con il rilancio minimo'),
+        steps: ['In heads-up, un\'azione passiva fuori turno (il check) vincola in parte.', `Il posto ${B} può solo chiamare o foldare davanti alla puntata, non rilanciare in questo giro (regola 55-B).`], tip: 'In heads-up il check fuori turno non è azione libera: toglie il rilancio.', rules: ['R55', 'I55-B']
+      };
+    }
+    const [B, A, C] = P, head = `Dopo il flop, in ${P.length} ancora in mano.`;
+    st(t, B, { bet: X, tag: 'PUNTA' }); st(t, A, { hot: true });
+    if (kind === 'call') {
+      st(t, A, { tag: 'FOLD', hot: false }); st(t, C, { bet: X, tag: 'CHIAMA', note: 'fuori turno' });
+      return {
+        title: 'Cosa vale?', head, table: t,
+        lines: [`Il posto ${B} punta ${fmt(X)}.`, `Tocca al posto ${A}, ma il posto ${C} chiama ${fmt(X)} fuori turno.`, `Il posto ${A} folda.`, `Cosa succede al call del posto ${C}?`],
+        options: optsOf(`Resta valido: il fold del posto ${A} non cambia l'azione`, 'Viene annullato: l\'azione è cambiata', `Il posto ${C} riprende i gettoni e sceglie di nuovo`, `Il posto ${C} è fuori dalla mano`),
+        steps: [`L'azione si riporta al giocatore giusto, il posto ${A}.`, 'Un check, un call o un fold del giocatore giusto non cambiano l\'azione.', `Quindi il call fuori turno del posto ${C} è vincolante, con una possibile penalità.`], tip: 'Fuori turno: se l\'azione non cambia, resta valido. Vale per check, call e raise.', rules: ['R55', 'I55-A1']
+      };
+    }
+    if (kind === 'raise') {
+      const Y = X * 3, Z = X * 4;
+      st(t, C, { bet: Y, tag: 'RILANCIA', note: 'fuori turno' }); st(t, A, { bet: Z, tag: 'RILANCIA', hot: false });
+      return {
+        title: 'Cosa vale?', head, table: t,
+        lines: [`Il posto ${B} punta ${fmt(X)}.`, `Tocca al posto ${A}, ma il posto ${C} rilancia a ${fmt(Y)} fuori turno.`, `L'azione torna al posto ${A}, che rilancia a ${fmt(Z)}.`, `Cosa può fare ora il posto ${C}?`],
+        options: optsOf('Riprende i gettoni e può chiamare, rilanciare o foldare', 'Deve lasciare il suo rilancio nel piatto e può solo chiamare', 'Deve foldare: ha agito fuori turno', `Può solo chiamare ${fmt(Z)} senza riprendere i gettoni`),
+        steps: [`Il rilancio del posto ${A} cambia l'azione.`, `Quindi il rilancio fuori turno del posto ${C} non è più vincolante: i suoi gettoni gli tornano.`, `Il posto ${C} ha di nuovo tutte le opzioni: call, raise o fold.`], tip: 'L\'azione fuori turno vale solo se l\'azione non cambia fino a chi ha agito fuori turno.', rules: ['R55', 'I55-A1']
+      };
+    }
+    st(t, C, { tag: 'FOLD', note: 'fuori turno' }); st(t, A, { bet: X * 3, tag: 'RILANCIA', hot: false });
+    return {
+      title: 'Cosa vale?', head, table: t,
+      lines: [`Il posto ${B} punta ${fmt(X)}.`, `Tocca al posto ${A}, ma il posto ${C} folda fuori turno.`, `L'azione torna al posto ${A}, che rilancia a ${fmt(X * 3)}.`, `Il fold del posto ${C} è valido?`],
+      options: optsOf('Sì, un fold fuori turno è sempre vincolante', 'No: dopo il rilancio l\'azione è cambiata e può tornare in mano', 'Solo se non aveva ancora toccato le carte', 'Decide il giocatore che ha rilanciato'),
+      steps: ['Check, call e raise fuori turno valgono solo se l\'azione non cambia.', `Il fold fuori turno invece è sempre vincolante: anche dopo il rilancio del posto ${A} il posto ${C} resta fuori dalla mano.`], tip: 'Il fold fuori turno è l\'unico che non si recupera.', rules: ['R55', 'I55-A1']
+    };
+  }
+  function genWords() {
+    const [sb, bb] = pick(BLINDS.slice(0, 6)), btn = rint(1, 9), t = mkTable(btn), me = seatAt(btn, rint(1, 8)), op = seatAt(me, 8), X = bb * rint(2, 5);
+    st(t, me, { hot: true });
+    const bet = () => st(t, op, { bet: X, tag: 'PUNTA' });
+    const S = [
+      () => ({ say: 'dice "call"', ask: 'Che azione è?', ok: 'Un check', wrong: [`Una puntata da ${fmt(bb)}`, 'Un\'azione non valida: deve ripetere', 'Un fold'], steps: ['Non c\'è nessuna puntata da chiamare.', 'Chi dice "call" senza puntate di fronte fa check.'], rules: ['R57'] }),
+      () => ({ say: 'dice "raise"', ask: 'Che azione è?', ok: `Deve fare almeno una puntata minima valida (${fmt(bb)})`, wrong: ['Un check', 'Un all-in', `Deve puntare esattamente il doppio del big blind (${fmt(bb * 2)})`], steps: ['Non c\'è nessuna puntata da rilanciare.', 'Chi dice "raise" senza puntate di fronte deve fare almeno una puntata minima valida (regola 57-B).'], rules: ['R57'] }),
+      () => { bet(); return { facing: 1, say: 'dice "check"', ask: 'Che cosa può fare ora?', ok: 'Può chiamare o foldare, ma non rilanciare', wrong: ['Il check vale come fold', 'Può ancora rilanciare', 'La dichiarazione è nulla e decide da capo'], steps: [`Davanti a una puntata di ${fmt(X)} dice "check".`, 'Chi dice "check" facendo fronte a una puntata può fare call o fold, ma non rilanciare (regola 57).'], rules: ['R57'] }; },
+      () => ({ say: 'batte la mano sul tavolo', ask: 'Che azione è?', ok: 'Un check', wrong: ['Niente: serve sempre una dichiarazione a voce', `Una puntata minima da ${fmt(bb)}`, 'Un fold'], steps: ['Senza una puntata di fronte, battere o picchiettare sul tavolo è un check (regola 3-A).'], rules: ['R3'] }),
+      () => { bet(); return { facing: 1, say: 'dice "pot" (no-limit)', ask: 'Che valore ha?', ok: `Non è una puntata valida, ma lo vincola a un rilancio valido (almeno a ${fmt(X * 2)})`, wrong: ['Rilancia del valore esatto del piatto', 'È un call', 'È un fold'], steps: ['In no-limit "pot" non è una puntata valida.', 'Però lo vincola a una puntata valida, e può dare una penalità. Davanti a una puntata deve fare un rilancio valido (regola 56-D).'], rules: ['R56'] }; },
+      () => ({ say: 'dice "se punti, io rilancio"', ask: 'Che valore ha?', ok: 'È una dichiarazione condizionale non standard: il TD può vincolarla e penalizzarla', wrong: ['È un check', `È una puntata minima da ${fmt(bb)}`, 'Non ha nessun valore: la ignori'], steps: ['Le dichiarazioni "se… allora…" sono non standard e fortemente scoraggiate.', 'A discrezione del TD possono essere vincolanti e/o penalizzate (regola 61-A).'], rules: ['R61'] }),
+      () => { bet(); return { facing: 1, say: 'chiede ad alta voce "ha rilanciato?"', ask: 'Che rischio c\'è?', ok: 'Può essere interpretata come dichiarazione di rilancio e diventare vincolante', wrong: ['È solo una domanda, non può mai vincolare', 'Vale come fold', 'Vale come call'], steps: ['Usare un termine ufficiale in una domanda può essere ritenuto vincolante, se interpretato come l\'azione voluta.', 'Meglio una domanda neutra: "qual è stata la sua azione?" (regola 3-B).'], rules: ['R3'] }; },
+      () => { bet(); return { facing: 1, say: `spinge i gettoni per un call da ${fmt(X)}, poi torna al suo stack a prenderne altri da aggiungere`, ask: 'Che cos\'è?', ok: 'String bet: non è ammessa', wrong: ['Un rilancio valido, fatto in due movimenti', 'Un call con aggiunta facoltativa', 'Un rilancio valido se non ha parlato'], steps: ['Mette fuori una puntata e poi torna allo stack per aggiungere: sono più movimenti.', 'Le string bet e i string raise non sono ammessi (regola 58).'], rules: ['R58'] }; },
+      () => { bet(); const R = X * 3; return { facing: 1, say: `dichiara "raise a ${fmt(R)}" e poi mette i gettoni in due movimenti`, ask: 'È valido?', ok: 'Sì, ha dichiarato il totale prima di mettere i gettoni', wrong: ['No, è uno string raise', 'È solo un call', 'Vale l\'importo dei primi gettoni messi'], steps: [`Ha dichiarato il totale (${fmt(R)}) prima di mettere i gettoni.`, 'Il rilancio è valido se è in un solo movimento oppure se il totale è dichiarato prima (regola 44).'], rules: ['R44'] }; }
+    ];
+    const k = pick(S)();
+    return { title: 'Cosa vale?', head: `Bui ${fmt(sb)}/${fmt(bb)}, no-limit. Dopo il flop.`, table: t, lines: [k.facing ? `Il posto ${op} ha puntato ${fmt(X)}.` : 'Nessuno ha ancora puntato.', `Il posto ${me} ${k.say}.`, k.ask], options: optsOf(k.ok, ...k.wrong), steps: k.steps, tip: 'Chi parla al tavolo sceglie le parole: se sono non standard, rischia un\'interpretazione diversa da quella che voleva.', rules: k.rules };
+  }
+  function genPenalty(level) {
+    const n = rint(4, 9), rounds = rint(1, 3), occ = someSeats(n), off = pick(occ);
+    const table = { button: pick(occ), seats: occ.map(s => ({ n: s })) };
+    st(table, off, { tag: 'PENALITÀ', hot: true });
+    const twist = level !== 'easy' && coin(.5);
+    const lines = [`Al tavolo siete in ${n}, il giocatore penalizzato compreso (posto ${off}).`, `Il floor gli dà ${rounds} ${rounds === 1 ? 'giro' : 'giri'} di penalità.`];
+    if (twist) lines.push('Subito dopo, due giocatori al tavolo vengono eliminati.');
+    const total = n * rounds;
+    return {
+      title: 'Quante mani salta?', head: '', lines, table, fields: [{ label: 'Mani saltate', answer: total }],
+      steps: [`Salta una mano per ogni giocatore al tavolo, lui compreso, al momento della penalità: ${n}.`, `Per ${rounds} ${rounds === 1 ? 'giro' : 'giri'}: ${n} × ${rounds} = ${total}.`, ...(twist ? ['Le eliminazioni successive non cambiano il conto: si usa il numero di giocatori quando la penalità è data.'] : [])],
+      tip: 'Intanto le carte vanno al suo posto, bui e ante si raccolgono e la mano si folda a fine distribuzione.', rules: ['R74']
+    };
+  }
+
+  // The answer that grades as right: used for the timeout (to show the explanation) and by the tests.
+  function solve(type, q) {
+    const k = TYPES[type].k;
+    if (k === 'win') return { seats: winners(q.board, q.holes).win };
+    if (k === 'name') { const b = best(q.board.concat(q.hole)); return { cat: b.score[0], cards: b.five }; }
+    if (k === 'board') { const i = boardInfo(q.board); return { paired: i.paired, flush: i.flush, straight: i.straight, cat: i.nut[0] }; }
+    if (k === 'num') return { vals: q.fields.map(f => String(f.answer)) };
+    if (k === 'choice') return { opt: q.options.findIndex(o => o.ok) };
+    if (k === 'seat') return { seat: q.answer };
+    return { roles: q.answer };
+  }
+  // Seconds a dealer should need at the table. The timed session counts down from these.
+  const TARGET = { win: 25, name: 30, board: 30, side: 60, pay: 75, raise: 30, call: 20, pot: 40, odd: 40, chips: 30, push: 25, reopen: 30, order: 15, show: 20, blinds: 30, bbante: 25, misdeal: 20, oot: 25, words: 20, penalty: 20, quiz: 20 };
+
   let QUIZ = [];
   function quizQ(id) {
     const x = QUIZ.find(k => k.id === id) || pick(QUIZ);
@@ -710,7 +826,7 @@
       options: shuffle(x.a.map((t, i) => ({ t, ok: i === 0 }))), steps: [x.why], tip: x.tip || '', rules: x.r
     };
   }
-  const GEN = { win: genWin, name: genName, board: genBoardRead, side: genSide, pay: genPay, raise: genMinRaise, call: genCall, pot: genPot, odd: genOdd, chips: genChips, push: genPush, reopen: genReopen, order: genOrder, show: genShow, blinds: genBlinds, bbante: genBBAnte, quiz: () => quizQ() };
+  const GEN = { win: genWin, name: genName, board: genBoardRead, side: genSide, pay: genPay, raise: genMinRaise, call: genCall, pot: genPot, odd: genOdd, chips: genChips, push: genPush, reopen: genReopen, order: genOrder, show: genShow, blinds: genBlinds, bbante: genBBAnte, misdeal: genMisdeal, oot: genOOT, words: genWords, penalty: genPenalty, quiz: () => quizQ() };
   const TYPES = {
     win: { n: 'Chi vince?', d: 'Board e mani scoperte, tocca il vincitore', g: 'p', k: 'win' },
     name: { n: 'Trova il punto', d: 'Nomina il punto e tocca le 5 carte', g: 'p', k: 'name' },
@@ -728,6 +844,10 @@
     show: { n: 'Chi mostra prima?', d: 'Ordine allo showdown', g: 'a', k: 'seat' },
     blinds: { n: 'Bui e bottone', d: 'Dead button dopo un\'eliminazione', g: 'a', k: 'roles' },
     bbante: { n: 'BB ante corto', d: 'Prima il buio, poi l\'ante', g: 'a', k: 'num' },
+    misdeal: { n: 'È misdeal?', d: 'Carte girate, distribuzioni sbagliate, mazzo compromesso', g: 'a', k: 'choice' },
+    oot: { n: 'Azione fuori turno', d: 'Cosa resta valido e cosa torna indietro', g: 'a', k: 'choice' },
+    words: { n: 'Parole e gesti', d: 'Check, call e raise detti nel momento sbagliato', g: 'a', k: 'choice' },
+    penalty: { n: 'Giri di penalità', d: 'Quante mani salta chi è penalizzato', g: 'a', k: 'num' },
     quiz: { n: 'Quiz TDA', d: 'Situazioni reali, con la regola', g: 't', k: 'choice' }
   };
   const GROUPS = { p: 'Punti', c: 'Calcoli da torneo', a: 'Azione al tavolo', t: 'Regolamento' };
@@ -790,7 +910,7 @@
 
   const api = {
     RANKS, SUITS, SYM, SUITN, CATS, RN, rv, fmt, parseNum, deck, deckMinus, shuffle, pick, eval5, cmp, best, describe, winners, boardInfo, boardFacts, straightWindow,
-    computePots, payouts, splitPot, classifyPush, sideScenario, trapBoard, GEN, TYPES, GROUPS, grade, quizQ, verdictLine, LV, SLOTS,
+    computePots, payouts, splitPot, classifyPush, sideScenario, trapBoard, GEN, TYPES, GROUPS, grade, quizQ, verdictLine, LV, SLOTS, solve, TARGET,
     setQuiz: list => { QUIZ = list; }, quizList: () => QUIZ, ringFrom, seatAt
   };
   root.DT = api;

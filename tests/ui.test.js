@@ -8,7 +8,7 @@ const server = http.createServer((q, s) => {
   const p = decodeURIComponent(q.url.split('?')[0]); const f = path.join(root, p === '/' ? 'index.html' : p);
   fs.readFile(f, (e, d) => { if (e) { s.writeHead(404); s.end(); } else { s.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'text/plain' }); s.end(d); } });
 });
-const TYPES = ['win', 'name', 'board', 'side', 'pay', 'raise', 'call', 'pot', 'odd', 'chips', 'push', 'reopen', 'order', 'show', 'blinds', 'bbante', 'quiz'];
+const TYPES = ['win', 'name', 'board', 'side', 'pay', 'raise', 'call', 'pot', 'odd', 'chips', 'push', 'reopen', 'order', 'show', 'blinds', 'bbante', 'misdeal', 'oot', 'words', 'penalty', 'quiz'];
 const errs = [];
 const verdict = p => p.textContent('.res b.t');
 
@@ -109,8 +109,25 @@ let base;
   // exam: no explanations until the end
   await p.click('[data-act=start][data-v=exam]');
   for (let i = 0; i < 20; i++) { await p.waitForSelector('[data-act=confirm]'); await answer(p, i % 4 !== 0, true); await p.click('[data-act=confirm]'); if (i < 19 && await p.$('.res')) errs.push('spiegazione durante la prova'); }
-  await p.waitForSelector('text=Sessione finita'); await p.click('[data-act=gohome]'); await p.waitForSelector('.start');
+  await p.waitForSelector('text=Sessione finita');
+  if (!/Non ancora: la soglia è 85%/.test(await p.textContent('#app'))) errs.push('esito della prova (soglia) non mostrato');
+  if (!await p.evaluate(() => store.runs.some(r => r.k === 'exam' && r.n === 20))) errs.push('prova non registrata nello storico');
+  await p.click('[data-act=gohome]'); await p.waitForSelector('.start');
   console.log('prova senza aiuti ok');
+
+  // timed session: countdown, a timeout counts as missed and still shows the answer
+  await p.click('[data-act=start][data-v=timed10]'); await p.waitForSelector('[data-act=confirm]');
+  const clock0 = await p.textContent('#clock'); if (!/^\d+s$/.test(clock0)) errs.push('conto alla rovescia: ' + clock0);
+  await p.evaluate(() => { cur.t0 -= 200000; }); await p.waitForSelector('.res', { timeout: 3000 });
+  if (await verdict(p) !== 'Sbagliato') errs.push('tempo scaduto non segnato sbagliato');
+  if (!/Tempo scaduto/.test(await p.textContent('.res'))) errs.push('manca "Tempo scaduto" nella spiegazione');
+  await p.click('[data-act=next]');
+  for (let i = 1; i < 10; i++) { await p.waitForSelector('[data-act=confirm]'); await answer(p, true, true); await p.click('[data-act=confirm]'); await p.click('[data-act=next]'); }
+  await p.waitForSelector('text=Sessione finita');
+  if (!/1 domanda scaduta/.test(await p.textContent('#app'))) errs.push('riepilogo a tempo senza le scadute');
+  if (await p.evaluate(() => store.runs.filter(r => r.k === 'timed').length) !== 1) errs.push('sessione a tempo non registrata');
+  await p.click('[data-act=gohome]'); await p.waitForSelector('.start');
+  console.log('sessione a tempo ok');
 
   // spaced review
   await p.evaluate(() => { store.srs.forEach(x => { x.due = 0; }); save(); }); await p.reload(); await p.waitForSelector('.start');
@@ -148,9 +165,19 @@ let base;
 
   // settings and backup
   await p.click('[data-tab=stats]'); await p.waitForSelector('.days'); await p.screenshot({ path: out + '/stats.png', fullPage: true }); await overflow(p, 'progressi');
+  for (const t of ['per settimana', 'per argomento', 'Prova senza aiuti', 'Sessioni a tempo']) if (!await p.$(`h2:has-text("${t}")`)) errs.push('statistiche: manca la sezione "' + t + '"');
+  // backup reminder: shown when 30+ answers and no recent export
+  await p.evaluate(() => { store.lastExport = 0; save(); });
+  await p.click('[data-tab=home]'); await p.waitForSelector('.start');
+  if (!await p.$('.tile.alert[data-act=export]')) errs.push('promemoria backup assente');
   await p.click('[data-tab=settings]'); await p.waitForSelector('[data-act=export]'); await p.screenshot({ path: out + '/settings.png', fullPage: true });
+  await p.click('[data-act=size][data-v=xl]'); await overflow(p, 'testo grande');
+  if (await p.evaluate(() => document.documentElement.style.fontSize) !== '20px') errs.push('dimensione del testo non applicata');
+  await p.screenshot({ path: out + '/settings-xl.png', fullPage: true });
+  await p.click('[data-act=size][data-v=m]');
   const [dl] = await Promise.all([p.waitForEvent('download'), p.click('[data-act=export]')]);
   const file = path.join(out, 'backup.json'); await dl.saveAs(file);
+  if (!await p.evaluate(() => store.lastExport > 0)) errs.push('data del backup non registrata');
   const n = await p.evaluate(() => Object.values(store.stats).reduce((a, s) => a + s.n, 0));
   await p.evaluate(() => { store = blankStore(); save(); });
   await p.setInputFiles('#importfile', file); await p.waitForFunction(x => Object.values(store.stats).reduce((a, s) => a + s.n, 0) === x, n);
