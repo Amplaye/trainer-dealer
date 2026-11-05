@@ -1,0 +1,710 @@
+'use strict';
+// User interface. No innerHTML anywhere: every element is built with h(), text goes in as text.
+const APP_VERSION = '2.0.0';
+const { CATS, SYM, TYPES, GROUPS, GEN, SLOTS, fmt, parseNum, rv, shuffle, pick, grade, quizQ, winners, best, boardInfo } = DT;
+DT.setQuiz(QUIZ);
+
+// ---------- storage ----------
+const KEY = 'trainer-dealer-v2', OLD_KEY = 'trainer-dealer-v1';
+const blankStore = () => ({ v: 2, level: 'auto', focus: 'all', goal: 20, vibrate: true, lang: 'it', stats: {}, days: {}, srs: [], quizSeen: {}, marks: [], resume: null });
+let volatile = null;
+function load() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw) return Object.assign(blankStore(), JSON.parse(raw));
+    const old = JSON.parse(localStorage.getItem(OLD_KEY) || 'null');
+    if (old) {
+      const s = blankStore();
+      s.stats = old.stats || {}; s.days = old.days || {};
+      if (['easy', 'normal', 'hard'].includes(old.level)) s.level = old.level;
+      (old.errors || []).filter(e => ['win', 'name', 'board'].includes(e.type)).forEach(e => s.srs.push({ id: e.id, type: e.type, q: e.q, box: 0, due: 0 }));
+      return s;
+    }
+  } catch (e) { if (volatile) return volatile; }
+  return blankStore();
+}
+function save() { volatile = store; try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) { /* private mode: keeps working in memory */ } }
+let store = load();
+let ses = null, cur = null, timer = null, lastSummary = null;
+
+// ---------- DOM helpers ----------
+const app = document.getElementById('app'), tabsEl = document.getElementById('tabs'), sheetEl = document.getElementById('sheet'), toastEl = document.getElementById('toast');
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const k in attrs || {}) {
+    const v = attrs[k];
+    if (v == null || v === false) continue;
+    if (k === 'class') el.className = v;
+    else if (k === 'value') el.value = v;
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  const add = x => { if (x == null || x === false) return; if (Array.isArray(x)) x.forEach(add); else el.append(x); };
+  kids.forEach(add);
+  return el;
+}
+const show = (...n) => { app.replaceChildren(...n.flat(Infinity).filter(Boolean)); };
+const svg = d => { const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('aria-hidden', 'true'); const p = document.createElementNS(NS, 'path'); p.setAttribute('d', d); s.append(p); return s; };
+const dayKey = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const today = () => dayKey(new Date());
+const isRed = c => c[1] === 'h' || c[1] === 'd';
+const rl = c => c[0] === 'T' ? '10' : c[0];
+const su = c => h('span', { class: `su ${isRed(c) ? 'red' : ''}` }, rl(c) + SYM[c[1]]);
+// {Kd} tokens in the explanations become coloured cards.
+const rich = t => String(t).split(/(\{[2-9TJQKA][shdc]\})/).map(p => /^\{..\}$/.test(p) ? su(p.slice(1, 3)) : p);
+function cardEl(c, o = {}) {
+  const cl = `card ${isRed(c) ? 'red' : ''} ${o.cls || ''}`;
+  const kids = [h('span', { class: 'r' }, rl(c)), h('span', { class: 's' }, SYM[c[1]])];
+  return o.act ? h('button', { class: cl, 'data-act': o.act, 'data-v': c, 'aria-label': rl(c) + ' di ' + DT.SUITN[c[1]] }, kids) : h('div', { class: cl }, kids);
+}
+const label = t => h('div', { class: 'label' }, t);
+const meter = p => h('div', { class: 'meter' }, h('i', { style: `width:${Math.max(0, Math.min(100, p))}%` }));
+function pos(i, kp = 1, kl = kp) {
+  const t = (24 + 39 * i) * Math.PI / 180, s = Math.sin(t), c = Math.cos(t), f = x => x.toFixed(1) + '%';
+  return `--px:${f(50 - 39 * s * kp)};--py:${f(50 + 41 * c * kp)};--lx:${f(50 - 44 * s * kl)};--ly:${f(50 + 38 * c * kl)}`;
+}
+const tableEl = (...kids) => h('div', { class: 'table' }, h('div', { class: 'felt' }), h('div', { class: 'you' }, 'TU'), kids);
+function seatEl(slot, kids, o = {}) {
+  return h(o.act ? 'button' : 'div', { class: `at ts ${o.cls || ''}`, style: pos(slot), 'data-act': o.act, 'data-v': o.v, 'aria-label': o.act ? `Posto ${slot + 1}` : null }, h('span', { class: 'tn' }, `Posto ${slot + 1}`), kids);
+}
+const backs = () => h('span', { class: 'hc' }, h('i', { class: 'cback' }), h('i', { class: 'cback' }));
+const boardEl = (board, fn) => h('div', { class: 'mid' }, h('div', { class: 'tboard' }, board.map(fn || (c => cardEl(c)))));
+const CHIP = { 25: '#2e9e5b', 100: '#20242b', 500: '#7b3fb5', 1000: '#e0b93c', 5000: '#d9622b', 25000: '#2f6fd0' };
+function numTable(t, seatOpt) {
+  const seats = t.seats.map(s => {
+    const fold = s.tag === 'FOLD', out = s.tag === 'ELIMINATO', slot = s.n - 1, o = seatOpt ? seatOpt(s) : {};
+    const tags = (o.tags || []).map(x => h('span', { class: 'tag' }, x));
+    return [
+      seatEl(slot, [fold || out || s.note ? null : backs(), s.tag && h('span', { class: `tag ${fold || out ? 'fold' : ''}` }, s.tag), s.note && h('span', { class: 'tnote' }, s.note), tags], { cls: `${s.hot ? 'hot' : ''} ${o.cls || ''}`, act: o.act, v: s.n }),
+      s.bet != null && h('div', { class: 'at tb', style: pos(slot, .5, .6) }, fmt(s.bet)),
+      t.button === s.n && h('div', { class: 'at dbtn', style: pos(slot + .4, .69, .68) }, 'D')
+    ];
+  });
+  const potShown = t.pot || (cur && ['pot', 'side', 'pay'].includes(cur.type));
+  return tableEl(potShown ? h('div', { class: 'mid pot' }, h('div', { class: 'potlbl' }, t.pot ? `Piatto ${fmt(t.pot)}` : 'Piatto ?')) : null, seats);
+}
+function chipTable(stacks) {
+  return tableEl(h('div', { class: 'mid' }, h('div', { class: 'stacks' }, stacks.map(s => {
+    const piles = []; for (let left = s.n; left > 0; left -= 20) piles.push(Math.min(20, left));
+    return h('div', { class: 'col' }, h('div', { class: 'pilerow' }, piles.map(n => h('div', { class: 'pile' }, Array.from({ length: n }, () => h('i', { class: 'disc', style: `background:${CHIP[s.v]}` }))))), h('b', null, fmt(s.v)));
+  }))));
+}
+const coarse = () => window.matchMedia('(pointer:coarse)').matches;
+function buzz(p) { if (store.vibrate && navigator.vibrate) navigator.vibrate(p); }
+function toast(text, btn, fn) {
+  toastEl.replaceChildren(h('span', null, text), btn ? h('button', { id: 'toastbtn' }, btn) : null);
+  toastEl.hidden = false;
+  if (btn) document.getElementById('toastbtn').onclick = fn; else setTimeout(() => { toastEl.hidden = true; }, 2600);
+}
+
+// ---------- progress ----------
+function streak() {
+  let n = 0; const d = new Date();
+  if (!store.days[today()]) d.setDate(d.getDate() - 1);
+  while (store.days[dayKey(d)]) { n++; d.setDate(d.getDate() - 1); }
+  return n;
+}
+const dueItems = () => store.srs.filter(x => x.due <= Date.now());
+const SRS_WAIT = [30 * 60e3, 864e5, 3 * 864e5, 7 * 864e5];
+function accuracy(type) { const s = store.stats[type]; if (!s || !s.last || !s.last.length) return s && s.n ? s.ok / s.n : null; return s.last.reduce((a, b) => a + b, 0) / s.last.length; }
+function levelFor(type) {
+  if (store.level !== 'auto') return store.level;
+  const s = store.stats[type], a = accuracy(type);
+  if (!s || s.n < 8 || a == null) return 'normal';
+  return a >= .85 ? 'hard' : a < .6 ? 'easy' : 'normal';
+}
+function record(type, ok, ms) {
+  const s = store.stats[type] || (store.stats[type] = { n: 0, ok: 0, ms: 0, last: [] });
+  s.n++; s.ms += ms; if (ok) s.ok++;
+  s.last = (s.last || []).concat(ok ? 1 : 0).slice(-20);
+  const d = store.days[today()] || (store.days[today()] = { n: 0, ok: 0 }); d.n++; if (ok) d.ok++;
+}
+function srsResult(q, type, ok, srsId) {
+  if (srsId) {
+    const it = store.srs.find(x => x.id === srsId); if (!it) return;
+    if (ok) { it.box++; if (it.box >= SRS_WAIT.length) store.srs = store.srs.filter(x => x !== it); else it.due = Date.now() + SRS_WAIT[it.box]; }
+    else { it.box = 0; it.due = Date.now() + SRS_WAIT[0]; }
+  } else if (!ok) {
+    store.srs.unshift({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), type, q, box: 0, due: Date.now() + SRS_WAIT[0] });
+    store.srs = store.srs.slice(0, 200);
+  }
+}
+
+// ---------- sessions ----------
+const FOCUS = { all: 'Tutto', p: 'Punti', c: 'Calcoli', a: 'Azione', t: 'Regole' };
+function allowedTypes() { const k = Object.keys(TYPES); return store.focus === 'all' ? k : k.filter(x => TYPES[x].g === store.focus); }
+function pickMix() {
+  const ks = allowedTypes(), w = ks.map(k => { const a = accuracy(k), s = store.stats[k]; const base = !s || s.n < 5 || a == null ? 2 : 1 + 3 * (1 - a); return k === 'quiz' ? base * 3 : base; });
+  let r = Math.random() * w.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < ks.length; i++) { r -= w[i]; if (r <= 0) return ks[i]; }
+  return ks[0];
+}
+function nextQuiz(ids) {
+  const pool = ids ? QUIZ.filter(x => ids.includes(x.id)) : QUIZ;
+  const seen = x => { const s = store.quizSeen[x.id]; return s ? s.n - (s.n - s.ok) * 2 : 0; };
+  const min = Math.min(...pool.map(seen));
+  return quizQ(pick(pool.filter(x => seen(x) === min)).id);
+}
+function make(type, ids) { return type === 'quiz' ? nextQuiz(ids) : GEN[type](levelFor(type)); }
+function start(mode, extra = {}) {
+  ses = { mode, total: null, done: 0, ok: 0, ms: 0, miss: {}, log: [], exam: false, ...extra };
+  if (mode.startsWith('mix')) ses.total = +mode.slice(3);
+  if (mode === 'exam') { ses.total = 20; ses.exam = true; }
+  if (mode === 'review') { ses.queue = dueItems().slice(0, 20); ses.total = ses.queue.length; }
+  beginPlay(); next();
+}
+function beginPlay() {
+  clearInterval(timer);
+  timer = setInterval(() => { const t = document.getElementById('clock'); if (t && cur && !cur.res) t.textContent = Math.floor((Date.now() - cur.t0) / 1000) + 's'; }, 500);
+  if (location.hash !== '#/play') location.hash = '#/play';
+  view = 'play';
+  setChrome();
+}
+function next(sameType) {
+  if (!sameType && ses.total && ses.done >= ses.total) return summary();
+  let type, q, srsId = null;
+  if (sameType) { type = cur.type; q = make(type); ses.total = ses.total ? ses.total + 1 : null; }
+  else if (ses.mode === 'review') { const it = ses.queue.shift(); type = it.type; q = it.q; srsId = it.id; }
+  else if (ses.mode === 'rule') { type = 'quiz'; q = nextQuiz(ses.ids); }
+  else if (ses.mode.startsWith('mix') || ses.mode === 'exam') {
+    const due = ses.mode !== 'exam' && Math.random() < .25 ? dueItems().filter(x => !ses.log.some(l => l.srsId === x.id)) : [];
+    if (due.length) { const it = pick(due); type = it.type; q = it.q; srsId = it.id; }
+    else { type = pickMix(); q = make(type); }
+  } else { type = ses.mode; q = make(type); }
+  setCur({ type, q, srsId, a: { cards: [], seats: [], vals: {}, roles: {} }, t0: Date.now(), res: null });
+  render();
+  const f = app.querySelector('input:not([readonly])'); if (f && !coarse()) f.focus();
+  window.scrollTo(0, 0);
+  persist();
+}
+function setCur(c) { cur = c; cur.field = 0; cur.role = 'bb'; }
+function persist() {
+  if (!ses) { store.resume = null; save(); return; }
+  const { mode, total, done, ok, ms, miss, exam, ids, queue } = ses;
+  store.resume = { mode, total, done, ok, ms, miss, exam, ids, queue: queue ? queue.map(x => x.id) : undefined, log: ses.log.slice(-30), cur: cur ? { type: cur.type, q: cur.q, srsId: cur.srsId } : null };
+  save();
+}
+function resume() {
+  const r = store.resume; if (!r) return;
+  ses = { ...r, cur: undefined, log: r.log || [], queue: r.queue ? store.srs.filter(x => r.queue.includes(x.id)) : undefined };
+  beginPlay();
+  if (r.cur) { setCur({ ...r.cur, a: { cards: [], seats: [], vals: {}, roles: {} }, t0: Date.now(), res: null }); render(); window.scrollTo(0, 0); } else next();
+}
+function header() {
+  const info = ses.total ? `${Math.min(ses.done + (cur.res ? 0 : 1), ses.total)}/${ses.total}` : `${ses.ok}/${ses.done} giuste`;
+  return h('div', { class: 'top' },
+    h('button', { class: 'back', 'data-act': 'exit' }, '‹ Esci'),
+    h('div', { class: 'info' }, `${TYPES[cur.type].n} · ${info} · `, h('span', { id: 'clock' }, cur.res ? (cur.res.ms / 1000).toFixed(1) + 's' : '0s')));
+}
+function resultEl(r) {
+  const k = store.lang, chips = (r.rules || []).map(id => h('button', { class: 'chip', 'data-act': 'rule', 'data-v': id }, ruleLabel(id)));
+  return h('div', { class: `res ${r.ok ? 'good' : 'wrong'}`, role: 'status' }, h('b', { class: 't' }, r.ok ? 'Giusto' : 'Sbagliato'),
+    r.steps.length > 1 ? h('ol', null, r.steps.map(s => h('li', null, rich(s)))) : h('div', null, rich(r.steps[0])),
+    r.tip && h('div', { class: 'tip' }, h('b', null, 'Da ricordare: '), rich(r.tip)),
+    chips.length ? h('div', { class: 'chips' }, chips) : null);
+}
+function footer() {
+  const r = cur.res;
+  if (cur.review) return [resultEl(r), h('button', { class: 'btn primary', 'data-act': 'backsum' }, 'Torna al riepilogo')];
+  if (!r) return [h('div', { class: 'hint', id: 'hint' }), h('button', { class: 'btn primary', 'data-act': 'confirm' }, ses.exam ? 'Conferma e avanti' : 'Conferma')];
+  const nextBtn = h('button', { class: 'btn primary', 'data-act': 'next' }, ses.total && ses.done >= ses.total ? 'Vedi il riepilogo' : 'Avanti');
+  if (r.ok || ses.mode === 'review') return [resultEl(r), nextBtn];
+  return [resultEl(r), h('div', { class: 'twobtn' }, h('button', { class: 'btn', 'data-act': 'same' }, 'Riprova simile'), nextBtn)];
+}
+function catBtns(sel, right) {
+  return h('div', { class: 'seg' }, CATS.map((c, i) => {
+    let k = '';
+    if (right != null) k = i === right ? 'good' : (i === sel ? 'wrong' : '');
+    else if (i === sel) k = 'on';
+    return h('button', { class: `btn ${k}`, 'data-act': 'cat', 'data-v': i }, c);
+  }));
+}
+function qBox(q, shown) {
+  const lines = shown || q.lines || [];
+  return h('div', { class: 'q' }, q.title && !q.quiz && h('b', null, q.title), q.head && h('p', null, q.head),
+    q.quiz ? h('p', { class: 'qt' }, q.lines[0]) : lines.length ? h('ul', null, lines.map(l => h('li', null, l))) : null);
+}
+const R = {
+  win() {
+    const { board, holes } = cur.q, done = cur.res, w = done ? winners(board, holes) : null, slots = SLOTS[holes.length];
+    const seats = holes.map((hd, i) => {
+      const sel = cur.a.seats.includes(i);
+      let k = sel ? 'sel' : '';
+      if (done) k = w.win.includes(i) ? 'win' : (sel ? 'miss' : '');
+      return seatEl(slots[i], h('span', { class: 'hc' }, hd.map(c => cardEl(c))), { act: 'seat', v: i, cls: k });
+    });
+    return [label('Tocca chi vince, più di uno se dividono'), tableEl(boardEl(board), seats)];
+  },
+  name() {
+    const { board, hole } = cur.q, done = cur.res, b = done ? best(board.concat(hole)) : null;
+    const c = x => cardEl(x, { act: 'card', cls: done ? (b.five.includes(x) ? 'used' : '') : (cur.a.cards.includes(x) ? 'sel' : '') });
+    return [label(`Tocca le 5 carte del punto (${cur.a.cards.length}/5)`), tableEl(boardEl(board, c), seatEl(4, h('span', { class: 'hc' }, hole.map(c)), { cls: 'big' })), label('Che punto è?'), catBtns(cur.a.cat, done ? b.score[0] : null)];
+  },
+  board() {
+    const { board } = cur.q, done = cur.res, inf = done ? boardInfo(board) : null;
+    const yn = (k, t) => {
+      const v = cur.a[k];
+      const bt = (val, l) => {
+        let c = '';
+        if (done) c = inf[k] === val ? 'good' : (v === val ? 'wrong' : '');
+        else if (v === val) c = 'on';
+        return h('button', { class: `btn ${c}`, 'data-act': 'yn', 'data-k': k, 'data-v': val ? 1 : 0 }, l);
+      };
+      return [label(t), h('div', { class: 'seg' }, bt(true, 'Sì'), bt(false, 'No'))];
+    };
+    return [label(`Siamo al ${{ 3: 'flop', 4: 'turn', 5: 'river' }[board.length]}, e conta quello che è possibile adesso`), tableEl(boardEl(board), [1, 3, 4, 5, 7].map(s => seatEl(s, backs()))), yn('paired', 'È accoppiato?'), yn('flush', 'Il colore è possibile?'), yn('straight', 'La scala è possibile?'), label('Punto massimo possibile'), catBtns(cur.a.cat, done ? inf.nut[0] : null)];
+  },
+  num() {
+    const q = cur.q, done = cur.res, touch = coarse();
+    const f = q.fields.map((x, i) => {
+      const v = cur.a.vals[i] ?? '', ok = done && parseNum(v) === x.answer;
+      const cls = done ? (ok ? 'good' : 'wrong') : (touch && cur.field === i ? 'active' : '');
+      return h('div', { class: 'field' }, h('label', { for: 'f' + i }, x.label),
+        h('div', null, h('input', { id: 'f' + i, inputmode: touch ? 'none' : 'numeric', autocomplete: 'off', value: v, readonly: !!done || touch, class: cls, 'data-field': i }),
+          done && !ok && h('span', { class: 'fix' }, fmt(x.answer))));
+    });
+    const pad = touch && !done ? h('div', { class: 'pad' }, ['1', '2', '3', '4', '5', '6', '7', '8', '9', '00', '0', '⌫'].map(k => h('button', { 'data-act': 'key', 'data-v': k, 'aria-label': k === '⌫' ? 'Cancella' : k }, k))) : null;
+    return [q.table && numTable(q.table), q.stacks && chipTable(q.stacks), qBox(q, q.shown), f, pad];
+  },
+  choice() {
+    const q = cur.q, done = cur.res;
+    const opts = q.options.map((o, i) => {
+      let c = '';
+      if (done) c = o.ok ? 'good' : (cur.a.opt === i ? 'wrong' : '');
+      else if (cur.a.opt === i) c = 'on';
+      return h('button', { class: `btn ${c}`, 'data-act': 'opt', 'data-v': i }, o.t);
+    });
+    return [q.table && numTable(q.table), qBox(q), h('div', { class: 'opts' }, opts)];
+  },
+  seat() {
+    const q = cur.q, done = cur.res;
+    const t = numTable(q.table, s => {
+      if (s.tag === 'FOLD' && !done) return {};
+      let k = cur.a.seat === s.n ? 'sel' : '';
+      if (done) k = s.n === q.answer ? 'win' : (cur.a.seat === s.n ? 'miss' : '');
+      return { act: 'pickseat', cls: k };
+    });
+    return [label(q.ask), t, qBox(q)];
+  },
+  roles() {
+    const q = cur.q, done = cur.res, r = cur.a.roles, role = { btn: 'Bottone', sb: 'Small blind', bb: 'Big blind' };
+    const t = numTable(q.table, s => {
+      const tags = [];
+      if (r.btn === s.n) tags.push('→ BOTTONE'); if (r.sb === s.n) tags.push('→ SB'); if (r.bb === s.n) tags.push('→ BB');
+      let k = '';
+      if (done) { const a = q.answer, rightHere = [a.btn, a.sb, a.bb].includes(s.n), mineHere = [r.btn, r.sb, r.bb].includes(s.n); k = rightHere ? 'win' : mineHere ? 'miss' : ''; }
+      return { act: 'pickseat', cls: k, tags };
+    });
+    const seg = h('div', { class: 'seg' }, Object.keys(role).map(k => h('button', { class: `btn ${cur.role === k ? 'on' : ''}`, 'data-act': 'role', 'data-v': k }, role[k] + (r[k] != null ? (r[k] === 0 ? ': nessuno' : `: ${r[k]}`) : ''))));
+    const none = cur.role === 'sb' && !done ? h('button', { class: 'btn wide', 'data-act': 'nosb' }, 'Nessuno small blind in questa mano') : null;
+    const sol = done ? h('p', { class: 'small' }, `Giusto: bottone ${q.answer.btn}, small blind ${q.answer.sb || 'nessuno'}, big blind ${q.answer.bb}.`) : null;
+    return [label('Scegli il ruolo, poi tocca il posto'), seg, none, t, qBox(q), sol];
+  }
+};
+function render() {
+  const k = TYPES[cur.type].k, body = (R[k] || R.num)();
+  show(cur.review ? h('div', { class: 'top' }, h('button', { class: 'back', 'data-act': 'backsum' }, '‹ Riepilogo')) : header(), body, footer());
+}
+function confirmQ() {
+  if (cur.res) return;
+  const k = TYPES[cur.type].k;
+  if (k === 'num') cur.q.fields.forEach((f, i) => { cur.a.vals[i] = document.getElementById('f' + i).value.trim(); });
+  const r = grade(cur.type, cur.q, cur.a);
+  if (!r) { document.getElementById('hint').textContent = 'Manca ancora qualcosa da rispondere.'; return; }
+  r.ms = Date.now() - cur.t0;
+  record(cur.type, r.ok, r.ms);
+  if (cur.q.quiz) { const s = store.quizSeen[cur.q.id] || (store.quizSeen[cur.q.id] = { n: 0, ok: 0 }); s.n++; if (r.ok) s.ok++; }
+  srsResult(cur.q, cur.type, r.ok, cur.srsId);
+  ses.done++; ses.ms += r.ms; if (r.ok) ses.ok++; else ses.miss[cur.type] = (ses.miss[cur.type] || 0) + 1;
+  if (!r.ok || ses.exam) ses.log.push({ type: cur.type, q: cur.q, a: JSON.parse(JSON.stringify(cur.a)), ok: r.ok, srsId: cur.srsId });
+  buzz(r.ok ? 15 : [30, 40, 30]);
+  if (ses.exam) { persist(); return next(); }
+  cur.res = r;
+  persist();
+  render();
+  const x = app.querySelector('.res'); if (x) x.scrollIntoView({ block: 'nearest' });
+}
+function summary() {
+  clearInterval(timer);
+  const s = ses; lastSummary = s; ses = null; cur = null; store.resume = null; save();
+  renderSummary();
+}
+function renderSummary() {
+  const s = lastSummary, pct = s.done ? Math.round(s.ok / s.done * 100) : 0, avg = s.done ? (s.ms / s.done / 1000).toFixed(1) : '0';
+  const m = Object.keys(s.miss).sort((a, b) => s.miss[b] - s.miss[a]);
+  const wrong = s.log.map((l, i) => ({ l, i })).filter(x => !x.l.ok);
+  view = 'summary'; setChrome();
+  show(h('h1', null, 'Sessione finita'), h('p', { class: 'big' }, pct + '%'), h('p', null, `${s.ok} giuste su ${s.done}, ${avg} secondi a domanda.`),
+    m.length ? [h('h2', null, 'Dove hai sbagliato'), h('table', null, m.map(k => h('tr', null, h('td', null, TYPES[k].n), h('td', null, String(s.miss[k])))))] : h('p', null, 'Nessun errore.'),
+    wrong.length ? [h('h2', null, 'Rivedi gli errori'), h('div', { class: 'list' }, wrong.map(({ l, i }) => h('button', { class: 'row', 'data-act': 'seelog', 'data-v': i }, h('span', { class: 'x' }, TYPES[l.type].n, h('span', { class: 'snip' }, (l.q.lines && l.q.lines[0]) || 'Vedi carte e spiegazione')))))] : null,
+    wrong.length ? h('p', { class: 'small' }, 'Questi errori tornano da soli nel ripasso, a intervalli sempre più lunghi.') : null,
+    h('button', { class: 'btn primary', 'data-act': 'gohome' }, 'Torna al menu'));
+  window.scrollTo(0, 0);
+}
+function seeLog(i) {
+  const l = lastSummary.log[i];
+  setCur({ type: l.type, q: l.q, a: l.a, res: grade(l.type, l.q, l.a), review: true, t0: 0 });
+  view = 'play'; setChrome(); render(); window.scrollTo(0, 0);
+}
+
+// ---------- TDA ----------
+let TDA = null, tdaLoading = null, tdaTab = 'ess', tdaQuery = '';
+const ESS = ['R13', 'R14', 'R15', 'R16', 'R17', 'R18', 'R19', 'R20', 'R21', 'R23', 'R24', 'R25', 'R26', 'R27', 'R32', 'R34', 'R36', 'R37', 'R38', 'R39', 'R40', 'R41', 'R42', 'R43', 'R44', 'R45', 'R46', 'R47', 'R48', 'R49', 'R51', 'R52', 'R53', 'R54', 'R55', 'R56', 'R57', 'R58', 'R59', 'R60', 'R62', 'R63', 'RP1', 'RP2', 'RP4', 'RP5', 'RP7', 'RP12', 'RP13', 'RP15', 'RP20', 'RP21', 'RP24'];
+function loadTDA() {
+  if (TDA) return Promise.resolve(TDA);
+  if (!tdaLoading) tdaLoading = fetch('data/tda.json').then(r => r.json()).then(d => { TDA = d; return d; }).catch(e => { tdaLoading = null; throw e; });
+  return tdaLoading;
+}
+function ruleLabel(id) {
+  if (TDA && TDA.items[id]) return TDA.items[id].label;
+  if (id.startsWith('RP')) return 'RP-' + id.slice(2);
+  if (id.startsWith('I')) return 'Esempi regola ' + id.slice(1);
+  return 'Regola ' + id.slice(1);
+}
+function creditEl() {
+  const link = 'http://www.pokertda.com';
+  return h('div', { class: 'credit' },
+    h('p', null, 'TDA rules used by permission of the Poker TDA, Copyright 2026, ', h('a', { href: link, target: '_blank', rel: 'noopener' }, link), ', All rights reserved.'),
+    h('p', null, 'Traduzione italiana a cura di Fabiano Stefanini, revisione a cura di Jacopo Marcelletti. ', h('a', { href: '#/info' }, 'Informazioni')));
+}
+const norm = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+function ruleRow(id, snippet) {
+  const x = TDA.items[id], n = x.s === 'glossary' ? '' : x.s === 'illustrations' ? id.slice(1) : x.s === 'procedures' ? 'RP-' + x.n : String(x.n);
+  return h('button', { class: 'row', 'data-act': 'open', 'data-v': id }, n ? h('span', { class: 'n' }, n) : null,
+    h('span', { class: 'x' }, x.title, x.isNew ? h('span', { class: 'badge' }, 'NOVITÀ 2026') : null, store.marks.includes(id) ? h('span', { class: 'badge' }, '★') : null, snippet ? h('span', { class: 'snip' }, snippet) : null));
+}
+function searchTDA(query) {
+  const words = norm(query).split(/\s+/).filter(Boolean), out = [];
+  for (const id in TDA.items) {
+    const x = TDA.items[id], t = norm(x.title + ' ' + x.label), body = norm(x.text + ' ' + (x.enText || ''));
+    if (!words.every(w => t.includes(w) || body.includes(w))) continue;
+    out.push({ id, score: words.filter(w => t.includes(w)).length * 3 + (x.s === 'rules' ? 1 : 0) });
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, 60);
+}
+function snippetFor(id, query) {
+  const x = TDA.items[id], w = norm(query).split(/\s+/).filter(Boolean)[0], src = x.text, at = norm(src).indexOf(w);
+  if (at < 0) return null;
+  const a = Math.max(0, at - 40), b = Math.min(src.length, at + w.length + 70);
+  return [a > 0 ? '…' : '', src.slice(a, at), h('mark', null, src.slice(at, at + w.length)), src.slice(at + w.length, b), b < src.length ? '…' : ''];
+}
+const TDA_TABS = { ess: 'Per il dealer', rules: 'Regole', procedures: 'Procedure', illustrations: 'Esempi', glossary: 'Glossario', news: 'Novità 2026', marks: 'Preferiti' };
+function tdaList() {
+  if (tdaQuery.trim().length >= 2) {
+    const res = searchTDA(tdaQuery);
+    return [h('p', { class: 'small' }, res.length ? `${res.length} ${res.length === 1 ? 'risultato' : 'risultati'}` : 'Nessun risultato.'), h('div', { class: 'list' }, res.map(r => ruleRow(r.id, snippetFor(r.id, tdaQuery))))];
+  }
+  if (tdaTab === 'rules') return TDA.cats.map(c => h('details', { class: 'cat' }, h('summary', null, c.name), h('div', { class: 'list' }, c.ids.map(id => ruleRow(id)))));
+  if (tdaTab === 'ess') return [h('p', { class: 'small' }, 'Le regole e le procedure che usi di più quando dai le carte. Il regolamento completo sta in Regole, Procedure ed Esempi.'), h('div', { class: 'list' }, ESS.map(id => ruleRow(id)))];
+  if (tdaTab === 'news') { const ids = Object.values(TDA.items).filter(x => x.isNew).map(x => x.id); return [h('p', { class: 'small' }, 'Quello che è cambiato rispetto al 2024. Dentro ogni regola le parti nuove sono evidenziate.'), h('div', { class: 'list' }, ids.map(id => ruleRow(id)))]; }
+  if (tdaTab === 'marks') return store.marks.length ? h('div', { class: 'list' }, store.marks.map(id => ruleRow(id))) : h('p', null, 'Nessun preferito. Apri una regola e tocca la stella.');
+  if (tdaTab === 'glossary') {
+    const cats = [...new Set(TDA.order.glossary.map(id => TDA.items[id].cat))];
+    return cats.map(c => h('details', { class: 'cat' }, h('summary', null, c), h('div', { class: 'list' }, TDA.order.glossary.filter(id => TDA.items[id].cat === c).map(id => ruleRow(id, TDA.items[id].text)))));
+  }
+  return h('div', { class: 'list' }, TDA.order[tdaTab].map(id => ruleRow(id)));
+}
+function renderTDAList() { const box = document.getElementById('tdalist'); if (box) box.replaceChildren(...[tdaList()].flat(Infinity).filter(Boolean)); }
+function viewTDA() {
+  show(h('h1', null, 'Regolamento TDA 2026'), h('p', { class: 'small' }, 'Sta tutto sul telefono e funziona anche senza rete.'), h('p', { class: 'small', id: 'tdaload' }, 'Carico il regolamento…'));
+  loadTDA().then(() => {
+    if (view !== 'tda') return;
+    const tabs = h('div', { class: 'seg scroll' }, Object.keys(TDA_TABS).map(k => h('button', { class: `btn ${tdaTab === k ? 'on' : ''}`, 'data-act': 'tdatab', 'data-v': k }, TDA_TABS[k])));
+    show(h('h1', null, 'Regolamento TDA 2026'), h('input', { class: 'search', id: 'tdasearch', type: 'search', placeholder: 'Cerca una parola, anche "side pot" o "45"', 'aria-label': 'Cerca nel regolamento', value: tdaQuery }), tabs, h('div', { id: 'tdalist', style: 'margin-top:10px' }), creditEl());
+    renderTDAList();
+  }).catch(() => { if (view === 'tda') show(h('h1', null, 'Regolamento TDA 2026'), h('p', null, 'Non riesco a caricare il regolamento. Apri l\'app una volta con la rete, poi resta disponibile anche offline.')); });
+}
+// Finds rule references in the text so they can be tapped.
+function findRefs(text, ownId) {
+  const out = [], fix = (TDA.linkfix && TDA.linkfix[ownId]) || {};
+  const target = n => { const m = fix[n] || n, id = 'R' + m; return TDA.items[id] && id !== ownId ? id : null; };
+  for (const m of text.matchAll(/\b(?:[Rr]egol[ae]|Rules?)\s+\d{1,2}(?:-?[A-Z]\d?)?(?:(?:,\s*|\s+e\s+|,?\s+and\s+|\s*&\s*)\d{1,2}(?:-?[A-Z]\d?)?)*/g)) {
+    for (const n of m[0].matchAll(/\d{1,2}(?:-?[A-Z]\d?)?/g)) {
+      const num = parseInt(n[0], 10), id = target(num);
+      if (id) out.push({ a: m.index + n.index, b: m.index + n.index + n[0].length, id });
+    }
+  }
+  for (const m of text.matchAll(/RP-(\d{1,2})/g)) { const id = 'RP' + m[1]; if (TDA.items[id] && id !== ownId) out.push({ a: m.index, b: m.index + m[0].length, id }); }
+  return out.sort((x, y) => x.a - y.a);
+}
+function ruleBody(text, red, ownId) {
+  const links = findRefs(text, ownId), paras = []; let off = 0;
+  for (const line of text.split('\n')) {
+    const start = off, end = off + line.length, cuts = new Set([start, end]);
+    red.forEach(([a, b]) => { if (a > start && a < end) cuts.add(a); if (b > start && b < end) cuts.add(b); });
+    links.forEach(l => { if (l.a >= start && l.b <= end) { cuts.add(l.a); cuts.add(l.b); } });
+    const pts = [...cuts].sort((x, y) => x - y), kids = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1], t = text.slice(a, b), l = links.find(x => x.a === a && x.b === b), isRed = red.some(([x, y]) => a >= x && b <= y);
+      let el = l ? h('a', { href: '#/r/' + l.id, 'data-act': 'ruleopen', 'data-v': l.id }, t) : t;
+      if (isRed) el = h('mark', null, el);
+      kids.push(el);
+    }
+    paras.push(h('p', { class: /^(?:[A-Z][:.)]|\d{1,2}[.)]|•|-)/.test(line) ? 'sub' : null }, kids));
+    off = end + 1;
+  }
+  return h('div', { class: 'body' }, paras);
+}
+// Our own remark, kept apart from the rule text: the translation itself is never altered.
+const noteEl = (x, en) => x.note && !en ? h('div', { class: 'note' }, h('b', null, 'Da sapere: '), x.note, ' Fa fede il testo inglese.') : null;
+const examplesFor = id => TDA.order.illustrations.filter(x => TDA.items[x].primary === id);
+const quizFor = id => QUIZ.filter(x => x.r.includes(id) || x.r.includes(id.replace(/^I/, 'R').replace(/-.*/, '')));
+function ruleContent(id, inSheet) {
+  const x = TDA.items[id], en = store.lang === 'en' && x.enText;
+  const text = en ? x.enText : x.text, red = en ? x.enRed : x.red, title = en ? x.enTitle : x.title;
+  const ex = x.s === 'rules' ? examplesFor(id) : [], qs = quizFor(id), marked = store.marks.includes(id);
+  const list = TDA.order[x.s], i = list.indexOf(id), prev = list[i - 1], nxt = list[i + 1];
+  return [
+    h('div', { class: 'rule' }, h('div', { class: 'kicker' }, x.label, x.isNew ? h('span', { class: 'badge' }, 'NOVITÀ 2026') : null), h('h1', null, title),
+      x.cat && x.s === 'rules' ? h('p', { class: 'small' }, x.cat) : null,
+      h('div', { class: 'tools' },
+        x.enText ? h('button', { class: 'btn', 'data-act': 'lang' }, en ? 'Italiano' : 'English') : null,
+        h('button', { class: `btn ${marked ? 'on' : ''}`, 'data-act': 'mark', 'data-v': id, 'aria-pressed': marked ? 'true' : 'false' }, marked ? '★ Preferita' : '☆ Preferita'),
+        qs.length && !inSheet ? h('button', { class: 'btn', 'data-act': 'rulequiz', 'data-v': id }, `Allenati (${qs.length})`) : null),
+      red.length ? h('p', { class: 'small' }, 'Evidenziato: quello che è cambiato nel 2026.') : null,
+      noteEl(x, en),
+      ruleBody(text, red, id)),
+    ex.map(e => { const y = TDA.items[e]; return h('details', { class: 'ex', open: true }, h('summary', null, 'Esempi ufficiali: ' + (en ? y.enTitle : y.title)), noteEl(y, en), ruleBody(en ? y.enText : y.text, en ? y.enRed : y.red, e)); }),
+    x.primary ? h('button', { class: 'btn wide', 'data-act': 'ruleopen', 'data-v': x.primary }, 'Vai alla ' + TDA.items[x.primary].label) : null,
+    !inSheet && x.s !== 'glossary' ? h('div', { class: 'pager' }, prev ? h('button', { class: 'btn', 'data-act': 'ruleopen', 'data-v': prev }, '‹ ' + TDA.items[prev].label) : h('span'), nxt ? h('button', { class: 'btn', 'data-act': 'ruleopen', 'data-v': nxt }, TDA.items[nxt].label + ' ›') : h('span')) : null,
+    creditEl()
+  ];
+}
+function viewRule(id) {
+  loadTDA().then(() => {
+    if (!TDA.items[id]) { location.hash = '#/tda'; return; }
+    show(h('div', { class: 'top' }, h('button', { class: 'back', 'data-act': 'hback' }, '‹ Regolamento')), ruleContent(id));
+    window.scrollTo(0, 0);
+  });
+}
+function openSheet(id) {
+  loadTDA().then(() => {
+    if (!TDA.items[id]) return;
+    sheetEl.replaceChildren(h('div', { class: 'sheetbox' }, h('div', { class: 'top' }, h('button', { class: 'back', 'data-act': 'hback' }, '‹ Torna alla domanda')), ruleContent(id, true)));
+    sheetEl.hidden = false; sheetEl.scrollTop = 0;
+    const b = sheetEl.querySelector('.sheetbox'); if (b) b.scrollTop = 0;
+  });
+}
+function closeSheet() { sheetEl.hidden = true; sheetEl.replaceChildren(); }
+
+// ---------- screens ----------
+let view = 'home';
+function tile(k) {
+  const a = accuracy(k), s = store.stats[k];
+  const pct = s && a != null ? Math.round(a * 100) : null;
+  return h('button', { class: 'tile', 'data-act': 'start', 'data-v': k }, h('b', null, TYPES[k].n), h('span', null, TYPES[k].d), pct != null ? [meter(pct), h('span', null, `${pct}% giuste nelle ultime`)] : null);
+}
+function viewHome() {
+  const keys = Object.keys(TYPES), st = streak(), d = store.days[today()], doneToday = d ? d.n : 0, due = dueItems().length, r = store.resume;
+  const lv = (v, t) => h('button', { class: `btn ${store.level === v ? 'on' : ''}`, 'data-act': 'level', 'data-v': v }, t);
+  const startBtn = (n, t) => h('button', { class: 'start', 'data-act': 'start', 'data-v': 'mix' + n }, h('b', null, String(n)), h('span', null, t));
+  show(
+    h('h1', null, 'Trainer Dealer'),
+    h('p', null, st ? `${st} ${st === 1 ? 'giorno' : 'giorni'} di fila · ` : '', `Oggi ${doneToday}/${store.goal}`), meter(doneToday / store.goal * 100),
+    r ? h('button', { class: 'tile alert', style: 'margin-top:12px', 'data-act': 'resume' }, h('b', null, 'Riprendi da dove eri'), h('span', null, r.total ? `${r.done} di ${r.total} fatte` : `${r.done} fatte, ${TYPES[r.cur ? r.cur.type : 'win'].n}`)) : null,
+    h('h2', null, 'Hai un momento? Quante domande?'),
+    h('div', { class: 'starts' }, startBtn(5, '2 minuti'), startBtn(10, '5 minuti'), startBtn(20, '10 minuti')),
+    h('div', { class: 'seg scroll', style: 'margin-top:10px' }, Object.keys(FOCUS).map(k => h('button', { class: `btn ${store.focus === k ? 'on' : ''}`, 'data-act': 'focus', 'data-v': k }, FOCUS[k]))),
+    h('div', { class: 'tiles', style: 'margin-top:10px' },
+      h('button', { class: `tile ${due ? 'alert' : ''}`, 'data-act': 'start', 'data-v': 'review', disabled: !due }, h('b', null, 'Ripasso errori'), h('span', null, due ? `${due} da rifare adesso` : store.srs.length ? `${store.srs.length} in attesa, tornano da soli` : 'Nessun errore da rifare')),
+      h('button', { class: 'tile', 'data-act': 'start', 'data-v': 'exam' }, h('b', null, 'Prova senza aiuti'), h('span', null, '20 domande, le spiegazioni solo alla fine'))),
+    ['p', 'c', 'a', 't'].map(g => [h('h2', null, GROUPS[g]), h('div', { class: 'tiles' }, keys.filter(k => TYPES[k].g === g).map(tile))]),
+    h('h2', null, 'Difficoltà'),
+    h('div', { class: 'seg' }, lv('auto', 'Automatica'), lv('easy', 'Facile'), lv('normal', 'Normale'), lv('hard', 'Difficile')),
+    store.level === 'auto' ? h('p', { class: 'small' }, 'Sale e scende da sola in base a come vai in ogni esercizio.') : null
+  );
+}
+function viewStats() {
+  const tot = Object.values(store.stats).reduce((a, s) => [a[0] + s.n, a[1] + s.ok], [0, 0]);
+  const dayCells = []; const d = new Date(); d.setDate(d.getDate() - 13);
+  let max = 1; const days = [];
+  for (let i = 0; i < 14; i++) { const k = dayKey(d), v = store.days[k] ? store.days[k].n : 0; days.push({ v, wd: 'DLMMGVS'[d.getDay()], k }); max = Math.max(max, v); d.setDate(d.getDate() + 1); }
+  const rows = Object.keys(TYPES).map(k => {
+    const s = store.stats[k], a = accuracy(k);
+    return h('tr', null, h('td', null, TYPES[k].n), h('td', null, String(s ? s.n : 0)), h('td', null, a != null ? Math.round(a * 100) + '%' : '–'), h('td', null, s && s.n ? (s.ms / s.n / 1000).toFixed(1) + 's' : '–'));
+  });
+  const weak = Object.keys(TYPES).filter(k => store.stats[k] && store.stats[k].n >= 5 && accuracy(k) != null).sort((a, b) => accuracy(a) - accuracy(b)).slice(0, 3);
+  show(h('h1', null, 'Progressi'),
+    h('div', { class: 'stats', style: 'margin-top:10px' },
+      h('div', { class: 'stat' }, h('b', null, String(streak())), h('span', null, 'giorni di fila')),
+      h('div', { class: 'stat' }, h('b', null, String(tot[0])), h('span', null, 'domande fatte')),
+      h('div', { class: 'stat' }, h('b', null, tot[0] ? Math.round(tot[1] / tot[0] * 100) + '%' : '–'), h('span', null, 'giuste in tutto'))),
+    h('h2', null, 'Domande al giorno, ultime 2 settimane'),
+    h('div', { class: 'days' }, days.map(x => h('div', { class: `day ${x.v ? '' : 'none'}`, title: `${x.k}: ${x.v} domande` }, x.v ? h('em', null, String(x.v)) : null, h('i', { style: `height:${Math.max(3, x.v / max * 78)}%` })))),
+    h('div', { class: 'daylbl' }, days.map(x => h('span', null, x.wd))),
+    weak.length ? [h('h2', null, 'Dove lavorare'), h('div', { class: 'tiles' }, weak.map(tile))] : null,
+    h('h2', null, 'Ultime 20 risposte per esercizio'),
+    h('table', null, h('tr', null, ['Esercizio', 'Fatte', 'Giuste', 'Tempo'].map(x => h('th', null, x))), rows));
+}
+let installEvent = null;
+const standalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
+function viewSettings() {
+  const goal = n => h('button', { class: `btn ${store.goal === n ? 'on' : ''}`, 'data-act': 'goal', 'data-v': n }, String(n));
+  show(h('h1', null, 'Impostazioni'),
+    !standalone() ? [h('h2', null, 'Installa sul telefono'),
+      installEvent ? h('button', { class: 'btn primary', 'data-act': 'install' }, 'Installa l\'app') :
+        h('p', null, isIOS() ? 'Su iPhone apri questa pagina con Safari, tocca Condividi e poi "Aggiungi alla schermata Home".' : 'Dal menu del browser scegli "Installa app" o "Aggiungi a schermata Home". Una volta installata funziona anche senza rete.')] : null,
+    h('h2', null, 'Domande al giorno'), h('div', { class: 'seg' }, goal(10), goal(20), goal(30), goal(50)),
+    h('h2', null, 'Vibrazione alla risposta'),
+    h('div', { class: 'seg' }, h('button', { class: `btn ${store.vibrate ? 'on' : ''}`, 'data-act': 'vib', 'data-v': 1 }, 'Sì'), h('button', { class: `btn ${!store.vibrate ? 'on' : ''}`, 'data-act': 'vib', 'data-v': 0 }, 'No')),
+    h('h2', null, 'I tuoi dati'),
+    h('p', { class: 'small' }, 'Restano solo su questo dispositivo. Per passarli su un altro esporta il file e importalo lì.'),
+    h('button', { class: 'btn wide', 'data-act': 'export' }, 'Esporta i progressi'),
+    h('button', { class: 'btn wide', 'data-act': 'import' }, 'Importa i progressi'),
+    h('input', { type: 'file', id: 'importfile', accept: 'application/json', hidden: true }),
+    h('button', { class: 'btn wide', 'data-act': 'reset' }, 'Azzera tutto'),
+    h('h2', null, 'App'),
+    h('button', { class: 'btn wide', 'data-act': 'info' }, 'Informazioni e crediti'),
+    h('p', { class: 'small' }, 'Versione ' + APP_VERSION));
+}
+function viewInfo() {
+  show(h('div', { class: 'top' }, h('button', { class: 'back', 'data-act': 'hback' }, '‹ Indietro')), h('h1', null, 'Informazioni'),
+    h('p', null, 'Trainer Dealer è un\'app di allenamento non ufficiale e non è affiliata al Poker TDA.'),
+    h('p', null, 'Il testo del regolamento è la versione 2026 Rules Version 1.0, Sept 6, 2026, con Procedure Raccomandate, Illustration Addendum e Glossario. La versione inglese è quella del TDA, la traduzione italiana è di Fabiano Stefanini con revisione di Jacopo Marcelletti. Il testo è stato ripreso tramite TDA Guide (tdaguide.com), toccando solo la tipografia. Il sito del TDA potrebbe indicare una revisione successiva: controlla lì la versione in vigore. Alcuni numeri di regola citati nel testo sono rimasti quelli dell\'edizione precedente: il link porta comunque alla regola giusta. I riquadri "Da sapere" non fanno parte del regolamento: segnalano dove la traduzione italiana si discosta dal testo inglese, che fa fede.'),
+    h('p', null, 'Quiz e spiegazioni sono riassunti scritti per l\'allenamento: in caso di dubbio fa fede il testo ufficiale. Al tavolo decidono le regole della tua sala e il floor.'),
+    creditEl());
+  window.scrollTo(0, 0);
+}
+function setChrome() {
+  document.body.classList.toggle('play', view === 'play');
+  const tabs = [['home', 'Allenati', 'M4 11l8-7 8 7v9h-5v-6h-6v6H4z'], ['tda', 'TDA', 'M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11'], ['stats', 'Progressi', 'M5 20v-7M12 20V5M19 20v-10'], ['settings', 'Impostazioni', 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4']];
+  tabsEl.replaceChildren(...tabs.map(([v, t, d]) => h('button', { class: view === v || (v === 'tda' && view === 'rule') ? 'on' : '', 'data-tab': v, 'aria-current': view === v ? 'page' : null }, svg(d), t)));
+}
+function route() {
+  const p = location.hash.replace(/^#/, '') || '/';
+  const sheet = p.match(/^\/play\/r\/(.+)$/);
+  if (p === '/play' || sheet) {
+    if (!cur) { location.hash = '#/'; return; }
+    if (view !== 'play') { view = 'play'; setChrome(); render(); }
+    if (sheet) openSheet(sheet[1]); else closeSheet();
+    return;
+  }
+  closeSheet();
+  clearInterval(timer);
+  if (ses) { persist(); ses = null; cur = null; }
+  const r = p.match(/^\/r\/(.+)$/);
+  if (r) { view = 'rule'; setChrome(); viewRule(r[1]); return; }
+  view = { '/tda': 'tda', '/stats': 'stats', '/settings': 'settings', '/info': 'info' }[p] || 'home';
+  setChrome();
+  ({ tda: viewTDA, stats: viewStats, settings: viewSettings, info: viewInfo, home: viewHome })[view]();
+  window.scrollTo(0, 0);
+}
+const go = hash => { if (location.hash === hash) route(); else location.hash = hash; };
+
+// ---------- events ----------
+function onClick(e) {
+  const b = e.target.closest('[data-act],[data-tab]'); if (!b) return;
+  if (b.dataset.tab) { const v = b.dataset.tab; return go(v === 'home' ? '#/' : '#/' + v); }
+  const act = b.dataset.act, v = b.dataset.v;
+  if (act === 'ruleopen' || act === 'rule') {
+    e.preventDefault();
+    return go(view === 'play' ? '#/play/r/' + v : '#/r/' + v);
+  }
+  switch (act) {
+    case 'start': return start(v);
+    case 'resume': return resume();
+    case 'exit': case 'gohome': return go('#/');
+    case 'hback': return history.back();
+    case 'focus': store.focus = v; save(); return viewHome();
+    case 'level': store.level = v; save(); return viewHome();
+    case 'goal': store.goal = +v; save(); return viewSettings();
+    case 'vib': store.vibrate = v === '1'; save(); return viewSettings();
+    case 'confirm': return confirmQ();
+    case 'next': return next();
+    case 'same': return next(true);
+    case 'seelog': return seeLog(+v);
+    case 'backsum': cur = null; return renderSummary();
+    case 'tdatab': tdaTab = v; tdaQuery = ''; return viewTDA();
+    case 'open': return go('#/r/' + v);
+    case 'lang': store.lang = store.lang === 'en' ? 'it' : 'en'; save(); return refreshRule();
+    case 'mark': { const i = store.marks.indexOf(v); if (i >= 0) store.marks.splice(i, 1); else store.marks.push(v); save(); return refreshRule(); }
+    case 'rulequiz': { const qs = quizFor(v).map(x => x.id); return start('rule', { ids: qs, total: qs.length }); }
+    case 'info': return go('#/info');
+    case 'install': if (installEvent) { installEvent.prompt(); installEvent.userChoice.finally(() => { installEvent = null; viewSettings(); }); } return;
+    case 'export': return exportData();
+    case 'import': return document.getElementById('importfile').click();
+    case 'reset': if (confirm('Azzero statistiche, errori e preferiti su questo dispositivo?')) { const keep = store; store = blankStore(); store.goal = keep.goal; save(); viewSettings(); toast('Fatto, si riparte da zero.'); } return;
+  }
+  if (!cur || cur.res) return;
+  if (act === 'seat') { const i = +v, s = cur.a.seats; s.includes(i) ? s.splice(s.indexOf(i), 1) : s.push(i); }
+  if (act === 'card') { const s = cur.a.cards; if (s.includes(v)) s.splice(s.indexOf(v), 1); else if (s.length < 5) s.push(v); }
+  if (act === 'cat') cur.a.cat = +v;
+  if (act === 'yn') cur.a[b.dataset.k] = v === '1';
+  if (act === 'opt') cur.a.opt = +v;
+  if (act === 'pickseat') {
+    if (TYPES[cur.type].k === 'roles') { cur.a.roles[cur.role] = +v; const order = ['bb', 'sb', 'btn']; const nx = order.find(k => cur.a.roles[k] == null); if (nx) cur.role = nx; }
+    else cur.a.seat = +v;
+  }
+  if (act === 'role') cur.role = v;
+  if (act === 'nosb') { cur.a.roles.sb = 0; const nx = ['bb', 'btn'].find(k => cur.a.roles[k] == null); if (nx) cur.role = nx; }
+  if (act === 'key') return padKey(v);
+  render();
+}
+function padKey(k) {
+  const el = document.getElementById('f' + cur.field); if (!el) return;
+  const digits = el.value.replace(/\D/g, '');
+  const nd = k === '⌫' ? digits.slice(0, -1) : (digits + k).replace(/^0+(?=\d)/, '').slice(0, 9);
+  el.value = nd ? fmt(nd) : '';
+  cur.a.vals[cur.field] = el.value;
+}
+function refreshRule() {
+  if (view === 'rule') { const m = location.hash.match(/^#\/r\/(.+)$/); if (m) viewRule(m[1]); }
+  const s = location.hash.match(/^#\/play\/r\/(.+)$/); if (s) openSheet(s[1]);
+}
+function exportData() {
+  const data = JSON.stringify({ ...store, resume: null });
+  const url = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
+  const a = h('a', { href: url, download: `trainer-dealer-${today()}.json` }); document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  toast('File salvato.');
+}
+function importData(file) {
+  const fr = new FileReader();
+  fr.onload = () => {
+    try {
+      const d = JSON.parse(fr.result);
+      if (d.v !== 2 || typeof d.stats !== 'object') throw new Error('formato');
+      store = Object.assign(blankStore(), d); save(); viewSettings(); toast('Progressi importati.');
+    } catch (e) { toast('Questo file non è un backup del trainer.'); }
+  };
+  fr.readAsText(file);
+}
+document.addEventListener('click', onClick);
+document.addEventListener('input', e => {
+  if (e.target.id === 'tdasearch') { tdaQuery = e.target.value; renderTDAList(); return; }
+  if (e.target.dataset.field != null) {
+    const d = e.target.value.replace(/\D/g, '').slice(0, 9);
+    e.target.value = d ? fmt(d.replace(/^0+(?=\d)/, '')) : '';
+    cur.a.vals[+e.target.dataset.field] = e.target.value;
+  }
+});
+document.addEventListener('focusin', e => {
+  if (cur && e.target.dataset && e.target.dataset.field != null && coarse()) {
+    cur.field = +e.target.dataset.field;
+    app.querySelectorAll('.field input').forEach((x, i) => x.classList.toggle('active', i === cur.field && !cur.res));
+  }
+});
+document.addEventListener('change', e => { if (e.target.id === 'importfile' && e.target.files[0]) importData(e.target.files[0]); });
+document.addEventListener('keydown', e => {
+  if (view !== 'play' || !cur || !sheetEl.hidden) return;
+  if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') { e.preventDefault(); if (cur.review) return; cur.res ? next() : confirmQ(); return; }
+  if (TYPES[cur.type].k === 'choice' && !cur.res && /^[1-9]$/.test(e.key) && e.target.tagName !== 'INPUT') { const i = +e.key - 1; if (cur.q.options[i]) { cur.a.opt = i; render(); } }
+});
+window.addEventListener('hashchange', route);
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvent = e; if (view === 'settings') viewSettings(); });
+
+// ---------- offline ----------
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    const offer = w => toast('C\'è una versione nuova.', 'Aggiorna', () => { toastEl.hidden = true; w.postMessage('skipWaiting'); });
+    if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
+    reg.addEventListener('updatefound', () => {
+      const w = reg.installing; if (!w) return;
+      w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) offer(w); });
+    });
+  }).catch(() => { /* still works online */ });
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloading) { reloading = true; location.reload(); } });
+}
+loadTDA().catch(() => { /* retried when the TDA screen opens */ });
+route();
