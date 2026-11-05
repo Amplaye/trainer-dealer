@@ -1,6 +1,6 @@
 'use strict';
 // User interface. No innerHTML anywhere: every element is built with h(), text goes in as text.
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.0.1';
 const { CATS, SYM, TYPES, GROUPS, GEN, SLOTS, fmt, parseNum, rv, shuffle, pick, grade, quizQ, winners, best, boardInfo } = DT;
 DT.setQuiz(QUIZ);
 
@@ -703,8 +703,10 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
       w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) offer(w); });
     });
   }).catch(() => { /* still works online */ });
+  // The very first install also fires controllerchange: reloading then would drop the question on screen.
+  const hadController = !!navigator.serviceWorker.controller;
   let reloading = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloading) { reloading = true; location.reload(); } });
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloading) { reloading = true; location.reload(); } });
 }
 loadTDA().catch(() => { /* retried when the TDA screen opens */ });
 route();
