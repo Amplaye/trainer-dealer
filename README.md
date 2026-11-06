@@ -11,7 +11,7 @@ TDA rules used by permission of the Poker TDA, Copyright 2026, [http://www.poker
 - `js/logic.js`: punti, generatori degli esercizi e spiegazioni, senza DOM
 - `js/quiz.js`: domande sul regolamento
 - `js/app.js`: interfaccia
-- `data/tda.json`: regolamento, generato da `tools/build-tda.js`
+- `data/tda.json`: regolamento, generato da `tools/build-tda.js`. Se lo rigeneri rilancia `tools/patch-tda-1-1.js` e `tools/patch-glossary.js`
 - `sw.js`: offline. Ad ogni rilascio va aumentata `VERSION`, altrimenti i telefoni non vedono l'aggiornamento
 
 ## Modalità
@@ -24,6 +24,10 @@ TDA rules used by permission of the Poker TDA, Copyright 2026, [http://www.poker
 ## Chips sul tavolo
 
 Side pot, Pagamenti, Conta il piatto e Fiche dispari si fanno con le chips (`q.felt`: `z` dove stanno, `want` quanto deve esserci a fine esercizio, `min` il taglio sotto cui il cambio si ferma). Nessun totale a vista finché non confermi: il tavolo tiene lo stato, tu conti. Gli errori salvati prima della 2.2 non hanno `felt` e restano esercizi a numeri (`kindOf`, `js/logic.js`).
+
+## Prova di selezione
+
+`#/prova`: 35 situazioni in circa 20 minuti (`SEL` in `js/logic.js`: aree, soglie, livello, margine sul tempo). Il codice prova fa da seme: stesso codice e stessa versione, stessa identica prova su ogni dispositivo. Il PIN tiene il candidato lontano dal report, non è sicurezza: tutto resta nel browser, senza server. Va usata in sala con l'esaminatore presente. Per una prova a distanza o a prova di manomissione serve un server che tenga domande e risposte. Le soglie non sono validate su dati veri.
 
 ## Test
 

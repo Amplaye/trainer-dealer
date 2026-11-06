@@ -9,14 +9,16 @@
   const RN = v => ({ 14: 'A', 13: 'K', 12: 'Q', 11: 'J' }[v] || String(v));
   const rv = c => RANKS.indexOf(c[0]) + 2;
   const al = v => (v === 14 || v === 8 ? "all'" : 'al ') + RN(v);
-  const rint = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
-  const pick = a => a[Math.floor(Math.random() * a.length)];
-  const coin = (p = .5) => Math.random() < p;
+  // Everything random goes through rnd, so a seeded run gives the same exam on every device.
+  let rnd = Math.random;
+  const rint = (a, b) => a + Math.floor(rnd() * (b - a + 1));
+  const pick = a => a[Math.floor(rnd() * a.length)];
+  const coin = (p = .5) => rnd() < p;
   const fmt = n => String(n).replace(/\B(?=(\d{3})+$)/g, '.');
   const parseNum = s => { const t = String(s).replace(/[.\s,]/g, ''); return t === '' || !/^\d+$/.test(t) ? NaN : Number(t); };
   const tok = c => '{' + c + '}';
   const toks = cs => cs.map(tok).join(' ');
-  function shuffle(a) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1));[a[i], a[j]] = [a[j], a[i]]; } return a; }
+  function shuffle(a) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1));[a[i], a[j]] = [a[j], a[i]]; } return a; }
   function deck() { const d = []; for (const r of RANKS) for (const s of SUITS) d.push(r + s); return shuffle(d); }
   const deckMinus = used => deck().filter(c => !used.includes(c));
   const byRank = cs => cs.slice().sort((a, b) => rv(b) - rv(a));
@@ -215,7 +217,7 @@
     const [sb, bb] = pick(BLINDS), u = unitOf(bb);
     const k = pick(level === 'easy' ? ['limp', 'open', 'post'] : ['open', 're', 'short', 'shortbb', 'post', 'postre', 'postshort', 'chain']);
     const open = bb * rint(2, 4) + u * rint(0, 4);
-    let lines, ans, steps, table, rules = ['R45', 'I45'], tip = 'Non raddoppiare il totale: conta l\'ultimo rilancio pieno, non l\'ultimo aumento. Un all-in corto non cambia la misura.';
+    let lines, ans, steps, table, rules = ['R45', 'I45'], tip = 'Il rilancio minimo è il totale da chiamare più l\'ultimo rilancio pieno. Raddoppiare il totale funziona solo sulla prima puntata, non dopo un rilancio. Un all-in corto non cambia la misura.';
     if (k === 'limp') {
       lines = ['Preflop: tutti chiamano il BB, nessun rilancio.']; ans = bb * 2; table = limpTable(sb, bb);
       steps = [`Il BB è la puntata di apertura: vale ${fmt(bb)}.`, `Il rilancio deve essere almeno pari alla puntata: ${fmt(bb)} + ${fmt(bb)} = ${fmt(ans)}.`];
@@ -292,6 +294,8 @@
     chips.forEach(v => { const b = BREAK[v]; if (!b || b[0] < min) return; pull(o[from], v); for (let i = 0; i < b[1]; i++) o[from].push(b[0]); });
     return o;
   }
+  // Illustration Addendum 17: the side pots are awarded before the main pot.
+  function payOrderOk(seq) { const ps = (seq || []).filter(z => z[0] === 'p'), i = ps.indexOf('p0'); return i < 0 || ps.slice(i).every(z => z === 'p0'); }
   const feltOk = (f, z) => [...new Set([...Object.keys(f.want), ...Object.keys(z)])].every(id => zoneSum(z[id]) === (f.want[id] || 0));
   // Errors saved before v2.2 have no felt: they stay number exercises, so the review list keeps working.
   const kindOf = (type, q) => q && q.felt ? 'felt' : TYPES[type].k;
@@ -347,7 +351,7 @@
       stacks.push({ v, n }); t += n * v;
     });
     steps.push(`Totale: ${fmt(t)}.`);
-    return { title: 'Conta lo stack', head: 'Pile ordinate da 20 pezzi, come vuole la regola 27.', lines, stacks, fields: [{ label: 'Totale', answer: t }], steps, tip: 'Conta per pile: una pila da 20 vale 20 volte il gettone. È il modo più veloce per stimare un all-in.', rules: ['R27', 'R62'] };
+    return { title: 'Conta lo stack', head: 'Pile ordinate da 20 pezzi, come vuole la regola 27.', lines, shown: level === 'easy' ? lines : [], stacks, fields: [{ label: 'Totale', answer: t }], steps, tip: 'Conta per pile: una pila da 20 vale 20 volte il gettone. È il modo più veloce per stimare un all-in.', rules: ['R27', 'R62'] };
   }
   function splitPot(pot, chip, seats, button) {
     const order = seats.slice().sort((a, b) => ((a - button + 8) % 9) - ((b - button + 8) % 9));
@@ -355,9 +359,9 @@
     const pay = {}; order.forEach((s, i) => pay[s] = (base + (i < extra ? 1 : 0)) * chip);
     return { pay, order, extra };
   }
-  function genOdd(level) {
+  function genOdd(level, oneOnly) {
     const n = level === 'easy' ? 2 : pick([2, 3]), chip = pick([100, 500, 1000]);
-    let chips = rint(21, 240); while (chips % n === 0) chips++;
+    let chips = rint(21, 240); while (chips % n === 0 || (oneOnly && chips % n !== 1)) chips++;
     const seats = someSeats(n), button = rint(1, 9), pot = chips * chip;
     const { pay, order, extra } = splitPot(pot, chip, seats, button);
     const table = mkTable(button);
@@ -460,7 +464,7 @@
     pots.forEach((p, i) => { z['p' + i] = chipsFor(p.amount); want['p' + i] = 0; });
     pl.forEach(p => { z['s' + p.n] = refund && refund.name === p.name ? chipsFor(refund.amount) : []; want['s' + p.n] = pay[p.name]; });
     return {
-      title: 'Paga i piatti', head: '', lines: shown, table, felt: { z, want, min: chip }, steps,
+      title: 'Paga i piatti', head: '', lines: shown, table, felt: { z, want, min: chip, order: true }, steps,
       tip: 'Si assegna prima il side pot e poi il principale (Illustration Addendum, regola 17). Con più side pot la prassi è partire dall\'ultimo e tornare indietro. Le carte di chi gioca solo il principale si scoprono subito con le altre, non si aspetta il side pot.',
       rules: ['R23', 'I17', 'R21']
     };
@@ -642,7 +646,7 @@
       return {
         title: 'Chi parla per primo?', head: 'Preflop, nuova mano.', lines: [`${n} giocatori al tavolo.`], table, answer: first, ask: 'Tocca il posto che parla per primo.',
         steps: [`Bottone al posto ${button}, small blind al ${sbS}, big blind al ${bbS}.`, `Preflop parla il primo a sinistra del big blind: posto ${first}.`, ...(n === 3 ? ['In tre, il primo a sinistra del big blind è proprio il bottone.'] : [])],
-        rules: ['I40', 'R36']
+        rules: ['G19', 'R36']
       };
     }
     const folded = shuffle(occ).slice(0, rint(0, n - 2));
@@ -748,13 +752,13 @@
       wrongSeat: () => { st(t, o1, { note: 'prima carta' }); return { lines: [`Dai la prima carta al posto ${o1}, invece che allo small blind (posto ${sbS}).`], ok: MIS, wrong: [GO, ASK], steps: ['La prima carta distribuita va allo small blind.', 'Se finisce al posto sbagliato è misdeal (regola 37-A).'] }; },
       noHand: () => { st(t, o1, { tag: 'ELIMINATO' }); return { lines: [`Il posto ${o1} è stato eliminato nella mano precedente. Per distrazione gli dai due carte.`], ok: MIS, wrong: [GO, ASK], steps: ['Un posto eliminato non ha diritto a una mano.', 'Dare carte a un posto che non ne ha diritto è misdeal (regola 37-A).'] }; },
       dealtOut: () => { st(t, o1, { note: 'saltato' }); return { lines: [`Salti per errore il posto ${o1}, che ha diritto alla mano.`], ok: MIS, wrong: [GO, ASK], steps: ['Un posto con diritto alla mano che resta senza carte è misdeal.', 'Regola 37-A.'] }; },
-      three: () => { st(t, o1, { note: '3 carte' }); return { lines: [`Finita la distribuzione ti accorgi che il posto ${o1}, che non è il bottone, ha ricevuto 3 carte. Nessuno ha ancora agito.`], ok: MIS, wrong: [GO, ASK], steps: ['Un numero sbagliato di carte a un giocatore è misdeal.', 'L\'unica eccezione è il bottone (regola 39).'] }; },
+      three: () => { st(t, o1, { note: '3 carte' }); return { lines: [`Finita la distribuzione ti accorgi che il posto ${o1} ha ricevuto 3 carte. Nessuno ha ancora agito.`], ok: MIS, wrong: [GO, ASK], steps: ['Un numero sbagliato di carte a un giocatore è misdeal.', 'L\'unica eccezione è il bottone con troppo poche carte (regola 39), non con carte in più.'] }; },
       btn2: () => { st(t, btn, { note: '2 carte di fila' }); return { lines: [`Dai due carte consecutive al giocatore di bottone, il posto ${btn}.`], ok: GO, wrong: [MIS, ASK], steps: ['Il bottone può ricevere 2 carte consecutive.', 'Non è un caso di misdeal (regola 37-B).'] }; },
-      sa: () => { sa({ note: '3 carte' }); return { lines: [`Il posto ${a1} folda e il posto ${a2} chiama. Poi ti accorgi che il posto ${tgt} ha 3 carte.`], ok: GO, wrong: [MIS, ASK], steps: ['Fold e call sono azione sostanziale: un\'azione con gettoni più un\'altra azione (regola 38).', 'Dopo azione sostanziale non si può dichiarare misdeal, a meno che il mazzo sia compromesso (regola 37-D).'] }; },
+      sa: () => { sa({ note: '3 carte' }); return { lines: [`Il posto ${a1} folda e il posto ${a2} chiama. Poi ti accorgi che il posto ${tgt} ha 3 carte.`], ok: GO, wrong: [MIS, ASK], steps: ['Fold e call sono azione sostanziale: un\'azione con gettoni più un\'altra azione (regola 38).', 'Dopo azione sostanziale non si può dichiarare misdeal, a meno che il mazzo sia compromesso (regola 37-D).', `La mano del posto ${tgt} è morta: le sue carte vanno nel muck e si brucia una sola carta per strada (regola 40, Esempio 1-B).`], rules: ['R37', 'R38', 'R40'] }; },
       foul: () => { sa({}); return { lines: [`Il posto ${a1} folda e il posto ${a2} chiama. Poi trovi nel mazzo due K di picche.`], ok: FOUL, wrong: [GO, MIS], steps: ['Due carte identiche rendono il mazzo compromesso.', 'Si ferma il gioco e si restituiscono tutte le puntate, anche dopo azione sostanziale (regola 37-E).'] }; }
     };
     const k = kinds[pick(Object.keys(kinds))]();
-    return { title: 'È misdeal?', head: 'Hold\'em, nuova mano.', table: t, lines: k.lines, options: optsOf(k.ok, ...k.wrong), steps: k.steps, tip: 'Dopo un misdeal la mano si rifà identica: il bottone non si muove e non entra nessun nuovo giocatore.', rules: ['R37', 'R38'] };
+    return { title: 'È misdeal?', head: 'Hold\'em, nuova mano.', table: t, lines: k.lines, options: optsOf(k.ok, ...k.wrong), steps: k.steps, tip: 'Dopo un misdeal la mano si rifà identica: il bottone non si muove e non entra nessun nuovo giocatore.', rules: k.rules || ['R37', 'R38'] };
   }
   function genOOT() {
     const [, bb] = pick(BLINDS.slice(0, 6)), btn = rint(1, 9), t = mkTable(btn);
@@ -889,7 +893,8 @@
       if (!a.z) return null;
       const vals = (q.fields || []).map((f, i) => parseNum(a.vals && a.vals[i] != null ? a.vals[i] : ''));
       if (vals.some(Number.isNaN)) return null;
-      return { ok: feltOk(q.felt, a.z) && (q.fields || []).every((f, i) => vals[i] === f.answer), steps: q.steps, tip: q.tip, rules: q.rules };
+      const inOrder = !q.felt.order || payOrderOk(a.seq);
+      return { ok: inOrder && feltOk(q.felt, a.z) && (q.fields || []).every((f, i) => vals[i] === f.answer), steps: inOrder ? q.steps : ['Hai toccato il piatto principale prima di aver finito i side pot: si assegnano prima i side pot, poi il principale.', ...q.steps], tip: q.tip, rules: q.rules };
     }
     if (k === 'win') {
       if (!a.seats || !a.seats.length) return null;
@@ -944,9 +949,39 @@
     return null;
   }
 
+  // ---------- selection test: same code, same exam, so candidates can be compared ----------
+  const SEL = {
+    pass: 85, areaMin: 70, slack: 2, level: 'hard',
+    areas: [
+      { n: 'Lettura dei punti', t: ['win', 'win', 'win', 'win', 'name', 'name', 'board', 'board'] },
+      { n: 'Piatti e chips', t: ['side', 'side', 'pay', 'pay', 'pot', 'odd', 'chips'] },
+      { n: 'Calcoli di puntata', t: ['raise', 'raise', 'call', 'call', 'bbante'] },
+      { n: 'Procedura al tavolo', t: ['push', 'reopen', 'order', 'show', 'blinds', 'misdeal', 'oot', 'words', 'penalty'] },
+      { n: 'Regolamento TDA', t: ['quiz', 'quiz', 'quiz', 'quiz', 'quiz', 'quiz'] }
+    ]
+  };
+  function seeded(code) {
+    let h = 1779033703;
+    for (const c of String(code)) { h = Math.imul(h ^ c.charCodeAt(0), 3432918353); h = h << 13 | h >>> 19; }
+    return () => { h = h + 0x6D2B79F5 | 0; let t = Math.imul(h ^ h >>> 15, 1 | h); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  function selectionPlan(code) {
+    const prev = rnd; rnd = seeded(code);
+    try {
+      const ids = shuffle(QUIZ.map(x => x.id));
+      return shuffle(SEL.areas.flatMap(a => a.t.map(type => ({ type, area: a.n, q: type === 'quiz' ? quizQ(ids.pop()) : GEN[type](SEL.level, true) }))));
+    } finally { rnd = prev; }
+  }
+  // What was not answered counts as wrong: the base is always the whole exam.
+  function scoreSelection(items) {
+    const areas = SEL.areas.map(a => { const ok = items.filter(x => x.area === a.n && x.ok).length; return { n: a.n, ok, total: a.t.length, pct: Math.round(ok / a.t.length * 100) }; });
+    const total = areas.reduce((s, a) => s + a.total, 0), ok = areas.reduce((s, a) => s + a.ok, 0), pct = Math.round(ok / total * 100);
+    return { ok, total, pct, areas, answered: items.length, inTime: items.filter(x => !x.to && x.ms <= TARGET[x.type] * 1000).length, timeouts: items.filter(x => x.to).length, pass: items.length === total && pct >= SEL.pass && areas.every(a => a.pct >= SEL.areaMin) };
+  }
+
   const api = {
     RANKS, SUITS, SYM, SUITN, CATS, RN, rv, fmt, parseNum, deck, deckMinus, shuffle, pick, eval5, cmp, best, describe, winners, boardInfo, boardFacts, straightWindow,
-    computePots, payouts, splitPot, classifyPush, chipsFor, zoneSum, moveChips, breakChips, feltOk, kindOf, potName, DENOMS, sideScenario, trapBoard, GEN, TYPES, GROUPS, grade, quizQ, verdictLine, LV, SLOTS, solve, TARGET,
+    computePots, payouts, splitPot, classifyPush, SEL, selectionPlan, scoreSelection, payOrderOk, chipsFor, zoneSum, moveChips, breakChips, feltOk, kindOf, potName, DENOMS, sideScenario, trapBoard, GEN, TYPES, GROUPS, grade, quizQ, verdictLine, LV, SLOTS, solve, TARGET,
     setQuiz: list => { QUIZ = list; }, quizList: () => QUIZ, ringFrom, seatAt
   };
   root.DT = api;

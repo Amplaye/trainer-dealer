@@ -167,6 +167,76 @@ let base;
   await p.click('[data-act=next]'); await p.waitForSelector('text=Sessione finita'); await p.click('[data-act=gohome]'); await p.waitForSelector('.start');
   console.log('errori vecchi ok');
 
+  // selection test: PIN, same exam, no help, nothing leaks, report
+  await p.click('[data-act=gosel]'); await p.waitForSelector('#selpin'); await p.screenshot({ path: out + '/sel-pin.png', fullPage: true });
+  await p.fill('#selpin', '12'); await p.click('[data-act=selsetpin]');
+  if (!/4 a 8/.test(await p.textContent('#hint'))) errs.push('PIN corto accettato');
+  await p.fill('#selpin', '4321'); await p.click('[data-act=selsetpin]'); await p.waitForSelector('#selname');
+  await p.click('[data-act=selgo]');
+  if (!/nome del candidato/.test(await p.textContent('#hint'))) errs.push('prova partita senza nome');
+  await p.fill('#selname', '=Mario Rossi'); await p.fill('#selsala', 'Casinò di Prova'); await p.fill('#selex', 'Anna Bianchi'); await p.fill('#selcode', 'abc123');
+  await p.screenshot({ path: out + '/sel-console.png', fullPage: true });
+  await p.click('[data-act=selgo]'); await p.waitForSelector('[data-act=selstart]'); await p.screenshot({ path: out + '/sel-intro.png', fullPage: true });
+  if (await p.isVisible('#tabs')) errs.push('menu visibile al candidato');
+  await p.click('[data-act=selstart]'); await p.waitForSelector('[data-act=confirm]');
+  const firstQ = await p.evaluate(() => JSON.stringify(cur.q));
+  if (firstQ !== await p.evaluate(() => JSON.stringify(DT.selectionPlan('ABC123')[0].q))) errs.push('la prova non segue il codice');
+  const stats0 = await p.evaluate(() => JSON.stringify([store.stats, store.srs.length, store.days]));
+  // the candidate cannot walk out
+  await p.evaluate(() => { location.hash = '#/stats'; }); await p.waitForTimeout(80);
+  if (await p.evaluate(() => location.hash) !== '#/play') errs.push('il candidato esce dalla prova con il tasto indietro');
+  await p.click('[data-act=selexit]'); await p.waitForSelector('dialog .pin'); await p.fill('dialog .pin', '0000'); await p.click('dialog [type=submit]');
+  if (!/sbagliato/.test(await p.textContent('dialog'))) errs.push('PIN sbagliato accettato per uscire');
+  await p.click('dialog .btn:not(.on)'); await p.waitForFunction(() => !document.querySelector('dialog'));
+  // leaving the app is written down
+  await p.evaluate(() => { Object.defineProperty(document, 'hidden', { value: true, configurable: true }); document.dispatchEvent(new Event('visibilitychange')); Object.defineProperty(document, 'hidden', { value: false, configurable: true }); document.dispatchEvent(new Event('visibilitychange')); });
+  for (let i = 0; i < 3; i++) { await answer(p, i !== 1, true); await p.click('[data-act=confirm]'); await p.waitForTimeout(20); if (await p.$('.res')) errs.push('spiegazione durante la selezione'); }
+  // closing the page does not reset the clock and locks the test
+  await p.evaluate(() => { cur.t0 -= 5000; persist(); });
+  const t0 = await p.evaluate(() => cur.t0);
+  await p.reload(); await p.waitForSelector('[data-act=selback]'); await p.screenshot({ path: out + '/sel-locked.png', fullPage: true });
+  if (await p.$('.start')) errs.push('dopo la chiusura il candidato torna al menu');
+  await p.click('[data-act=selback]'); await p.fill('dialog .pin', '4321'); await p.click('dialog [type=submit]'); await p.waitForSelector('[data-act=confirm]');
+  if (await p.evaluate(() => cur.t0) !== t0) errs.push('riaprire ha azzerato il tempo');
+  for (let i = 3; i < 35; i++) {
+    await p.waitForSelector('[data-act=confirm]');
+    if (i === 10) { await p.evaluate(() => { cur.t0 -= 900000; }); await p.waitForFunction(n => ses.done > n, i, { timeout: 3000 }); continue; }
+    await answer(p, i % 9 !== 0, true); await p.click('[data-act=confirm]');
+  }
+  await p.waitForSelector('[data-act=gosel]'); await p.screenshot({ path: out + '/sel-end.png', fullPage: true });
+  if (/%|giuste/.test(await p.textContent('#app'))) errs.push('punteggio mostrato al candidato');
+  if (await p.evaluate(s => JSON.stringify([store.stats, store.srs.length, store.days]) !== s, stats0)) errs.push('la selezione sporca statistiche e ripasso');
+  await p.click('[data-act=gosel]'); await p.waitForSelector('#selpin'); await p.fill('#selpin', '4321'); await p.click('[data-act=selenter]'); await p.waitForSelector('.paper');
+  await p.screenshot({ path: out + '/sel-report.png', fullPage: true });
+  const rep = await p.evaluate(() => store.sels[store.sels.length - 1]);
+  if (rep.items.length !== 35 || rep.away !== 1 || rep.reloads !== 1 || rep.score.timeouts !== 1 || rep.code !== 'ABC123') errs.push('report: ' + JSON.stringify({ n: rep.items.length, away: rep.away, rl: rep.reloads, to: rep.score.timeouts, code: rep.code }));
+  const paper = await p.textContent('.paper');
+  for (const t of ['=Mario Rossi', 'Casinò di Prova', 'Anna Bianchi', 'ABC123', 'Da valutare al tavolo', 'Lettura dei punti', 'pokertda.com', 'Tempo scaduto']) if (!paper.includes(t)) errs.push('report senza: ' + t);
+  await overflow(p, 'report');
+  // every wrong answer opens, timed out ones included
+  const nw = await p.evaluate(() => document.querySelectorAll('[data-act=seerep]').length);
+  if (!nw) errs.push('report senza errori da rivedere');
+  for (let i = 0; i < nw; i++) { await (await p.$$('[data-act=seerep]'))[i].click(); await p.waitForSelector('.res'); await p.click('[data-act=backsum]'); await p.waitForSelector('.paper'); }
+  await p.emulateMedia({ media: 'print' }); await p.screenshot({ path: out + '/sel-print.png', fullPage: true });
+  if (await p.isVisible('.noprint')) errs.push('i bottoni finiscono in stampa');
+  await p.emulateMedia({ media: 'screen' });
+  fs.writeFileSync(out + '/report.pdf', await p.pdf({ format: 'A4', printBackground: true }));
+  await p.click('[data-act=gosel]'); await p.waitForSelector('[data-act=selcsv]'); await p.screenshot({ path: out + '/sel-list.png', fullPage: true });
+  const [csv] = await Promise.all([p.waitForEvent('download'), p.click('[data-act=selcsv]')]);
+  const cf = path.join(out, 'cand.csv'); await csv.saveAs(cf); const ct = fs.readFileSync(cf, 'utf8');
+  if (!ct.includes('"\'=Mario Rossi"')) errs.push('CSV: il nome non è neutralizzato contro le formule');
+  // the next candidate with the same code gets the same exam
+  await p.fill('#selname', 'Luca Verdi'); await p.click('[data-act=selgo]'); await p.click('[data-act=selstart]'); await p.waitForSelector('[data-act=confirm]');
+  if (firstQ !== await p.evaluate(() => JSON.stringify(cur.q))) errs.push('secondo candidato con prova diversa');
+  await p.click('[data-act=selexit]'); await p.fill('dialog .pin', '4321'); await p.click('dialog [type=submit]');
+  await p.waitForSelector('text=Prova interrotta');
+  if (await p.evaluate(() => store.sels[store.sels.length - 1].score.pass)) errs.push('prova interrotta sopra soglia');
+  await p.click('[data-act=gosel]'); await p.fill('#selpin', '4321'); await p.click('[data-act=selenter]'); await p.waitForSelector('.paper');
+  p.once('dialog', x => x.accept()); await p.click('[data-act=seldel]'); await p.waitForSelector('#selname');
+  if (await p.evaluate(() => store.sels.length) !== 1) errs.push('report non eliminato');
+  await p.click('[data-act=gohome]'); await p.waitForSelector('.start');
+  console.log('prova di selezione ok');
+
   // resume after closing
   await p.click('[data-act=start][data-v=mix5]'); await p.waitForSelector('[data-act=confirm]');
   await answer(p, true, true); await p.click('[data-act=confirm]'); await p.click('[data-act=next]');

@@ -1,12 +1,12 @@
 'use strict';
 // User interface. No innerHTML anywhere: every element is built with h(), text goes in as text.
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '3.0.0';
 const { CATS, SYM, TYPES, GROUPS, GEN, SLOTS, TARGET, fmt, parseNum, rv, shuffle, pick, grade, quizQ, winners, best, boardInfo } = DT;
 DT.setQuiz(QUIZ);
 
 // ---------- storage ----------
 const KEY = 'trainer-dealer-v2', OLD_KEY = 'trainer-dealer-v1';
-const blankStore = () => ({ v: 2, level: 'auto', focus: 'all', goal: 20, vibrate: true, lang: 'it', size: 'm', stats: {}, days: {}, srs: [], srsDropped: 0, quizSeen: {}, marks: [], runs: [], lastExport: 0, resume: null });
+const blankStore = () => ({ v: 2, level: 'auto', focus: 'all', goal: 20, vibrate: true, lang: 'it', size: 'm', stats: {}, days: {}, srs: [], srsDropped: 0, quizSeen: {}, marks: [], runs: [], lastExport: 0, resume: null, sels: [], selPin: '', selDef: {} });
 const PASS = 85, SRS_MAX = 300, BACKUP_DAYS = 30, SIZES = { m: '16px', l: '18px', xl: '20px' };
 let volatile = null;
 function load() {
@@ -87,10 +87,11 @@ function numTable(t, seatOpt) {
   const potShown = t.pot || (cur && ['pot', 'side', 'pay'].includes(cur.type));
   return tableEl(potShown ? h('div', { class: 'mid pot' }, h('div', { class: 'potlbl' }, t.pot ? `Piatto ${fmt(t.pot)}` : 'Piatto ?')) : null, seats);
 }
+const chipDisc = v => h('i', { class: 'fd', style: `--c:${CHIP[v]}` });
 function chipTable(stacks) {
   return tableEl(h('div', { class: 'mid' }, h('div', { class: 'stacks' }, stacks.map(s => {
     const piles = []; for (let left = s.n; left > 0; left -= 20) piles.push(Math.min(20, left));
-    return h('div', { class: 'col' }, h('div', { class: 'pilerow' }, piles.map(n => h('div', { class: 'pile' }, Array.from({ length: n }, () => h('i', { class: 'disc', style: `background:${CHIP[s.v]}` }))))), h('b', null, fmt(s.v)));
+    return h('div', { class: 'col' }, h('div', { class: 'pilerow' }, piles.map(n => h('div', { class: 'fstack' }, Array.from({ length: n }, () => chipDisc(s.v))))), h('b', null, fmt(s.v)));
   }))));
 }
 // Seat 1 sits bottom left and the numbers run clockwise, as on the oval table.
@@ -99,10 +100,10 @@ const shortV = v => v >= 1000 ? v / 1000 + 'k' : String(v);
 const zones = () => cur.a.z || cur.q.felt.z;
 function pileEl(v, n, z) {
   if (!n) return null;
-  const discs = Array.from({ length: n }, () => h('i', { class: 'fd', style: `background:${CHIP[v]}` }));
-  const kids = [h('span', { class: 'fstack' }, discs), h('b', null, shortV(v))];
+  const kids = [h('span', { class: 'fstack' }, Array.from({ length: n }, () => chipDisc(v))), h('b', null, shortV(v))];
   return z ? h('button', { class: 'fp', 'data-act': 'chip', 'data-z': z, 'data-v': v, 'aria-label': `Prendi una fiche da ${fmt(v)}` }, kids) : h('span', { class: 'fp' }, kids);
 }
+const pilesFor = chips => DT.DENOMS.map(v => pileEl(v, chips.filter(c => c === v).length));
 function pilesOf(id, z, hand) {
   const left = (z[id] || []).slice();
   if (hand && hand.from === id) hand.chips.forEach(c => left.splice(left.indexOf(c), 1));
@@ -117,9 +118,19 @@ function placeHand(to) {
   const hand = cur.hand; if (!hand) return;
   cur.hand = null;
   if (to === hand.from) return;
-  if (to !== 'change') { cur.a.z = DT.moveChips(zones(), hand.from, hand.chips, to); buzz(8); return; }
+  if (to !== 'change') { cur.a.z = DT.moveChips(zones(), hand.from, hand.chips, to); (cur.a.seq = cur.a.seq || []).push(hand.from); cur.fly = { from: hand.from, to, chips: hand.chips }; buzz(8); return; }
   const z = DT.breakChips(zones(), hand.from, hand.chips, cur.q.felt.min);
   if (JSON.stringify(z) === JSON.stringify(zones())) toast('Più piccola di così non si cambia.'); else cur.a.z = z;
+}
+// Tapped chips travel to where you put them. A drag does not need it: the finger already carried them.
+function flyChips() {
+  const { from, to, chips } = cur.fly, at = id => app.querySelector(`.zone[data-z="${id}"]`), a = at(from), b = at(to);
+  cur.fly = null;
+  if (!a || !b || window.matchMedia('(prefers-reduced-motion:reduce)').matches) return;
+  const spot = e => { const r = e.getBoundingClientRect(); return `translate(${r.left + r.width / 2}px,${r.top + r.height / 2}px) translate(-50%,-50%)`; };
+  const el = h('div', { class: 'fly fps' }, pilesFor(chips));
+  document.body.append(el);
+  el.animate([{ transform: spot(a) }, { transform: spot(b) }], { duration: 240, easing: 'cubic-bezier(.2,.8,.2,1)' }).onfinish = () => el.remove();
 }
 let drag = null, skipClick = false;
 // No render here: replacing the pressed element would lose the finger on touch screens.
@@ -130,7 +141,7 @@ function liftChips() {
     if (!chips.length) return false;
     cur.hand = { from: z, chips: chips.slice() };
   }
-  drag.ghost = h('div', { class: 'ghost fps' }, DT.DENOMS.map(v => pileEl(v, cur.hand.chips.filter(c => c === v).length)));
+  drag.ghost = h('div', { class: 'ghost fps' }, pilesFor(cur.hand.chips));
   document.body.append(drag.ghost);
   (p.dataset.grab ? p.parentElement : p).classList.add('lifted');
   return true;
@@ -215,14 +226,15 @@ function tick() {
   const t = document.getElementById('clock'); if (!t || !cur || !ses || cur.res) return;
   const s = Math.floor((Date.now() - cur.t0) / 1000);
   if (!ses.timed) { t.textContent = s + 's'; return; }
-  const left = TARGET[cur.type] - s;
+  const left = limit(cur.type) - s;
   t.textContent = Math.max(0, left) + 's'; t.className = left <= 5 ? 'late' : '';
   if (left <= 0) timeout();
 }
+const limit = t => TARGET[t] * (ses.sel ? DT.SEL.slack : 1);
 function timeout() {
   if (!cur || cur.res) return;
   const r = grade(cur.type, cur.q, DT.solve(cur.type, cur.q));
-  r.ok = false; r.steps = ['Tempo scaduto. Questa era la risposta giusta.', ...r.steps];
+  r.ok = false; r.timeout = true; r.steps = ['Tempo scaduto. Questa era la risposta giusta.', ...r.steps];
   ses.timeouts++;
   finishQ(r);
 }
@@ -231,6 +243,7 @@ function next(sameType) {
   let type, q, srsId = null;
   if (sameType) { type = cur.type; q = make(type); ses.total = ses.total ? ses.total + 1 : null; }
   else if (ses.mode === 'review') { const it = ses.queue.shift(); type = it.type; q = it.q; srsId = it.id; }
+  else if (ses.mode === 'sel') ({ type, q } = ses.plan[ses.done]);
   else if (ses.mode === 'rule') { type = 'quiz'; q = nextQuiz(ses.ids); }
   else if (ses.mode.startsWith('mix') || ses.timed || ses.mode === 'exam') {
     const due = ses.mode !== 'exam' && !ses.timed && Math.random() < .25 ? dueItems().filter(x => !ses.log.some(l => l.srsId === x.id)) : [];
@@ -246,21 +259,23 @@ function next(sameType) {
 function setCur(c) { cur = c; cur.field = 0; cur.role = 'bb'; cur.hand = null; }
 function persist() {
   if (!ses) { store.resume = null; save(); return; }
-  const { mode, total, done, ok, ms, miss, exam, ids, queue, timeouts } = ses;
-  store.resume = { mode, total, done, ok, ms, miss, exam, timeouts, ids, queue: queue ? queue.map(x => x.id) : undefined, log: ses.log.slice(-30), cur: cur ? { type: cur.type, q: cur.q, srsId: cur.srsId } : null };
+  const { mode, total, done, ok, ms, miss, exam, ids, queue, timeouts, sel } = ses;
+  store.resume = { mode, total, done, ok, ms, miss, exam, timeouts, ids, sel, queue: queue ? queue.map(x => x.id) : undefined, log: ses.log.slice(sel ? 0 : -30), cur: cur ? { type: cur.type, q: cur.q, srsId: cur.srsId, t0: cur.t0 } : null };
   save();
 }
 function resume() {
   const r = store.resume; if (!r) return;
-  ses = { ...r, timed: r.mode.startsWith('timed'), timeouts: r.timeouts || 0, cur: undefined, log: r.log || [], queue: r.queue ? store.srs.filter(x => r.queue.includes(x.id)) : undefined };
+  ses = { ...r, timed: r.mode.startsWith('timed') || !!r.sel, timeouts: r.timeouts || 0, cur: undefined, log: r.log || [], queue: r.queue ? store.srs.filter(x => r.queue.includes(x.id)) : undefined };
+  if (r.sel) { ses.plan = DT.selectionPlan(r.sel.code); ses.sel.reloads++; }
   beginPlay();
-  if (r.cur) { setCur({ ...r.cur, a: { cards: [], seats: [], vals: {}, roles: {} }, t0: Date.now(), res: null }); render(); window.scrollTo(0, 0); } else next();
+  // In the selection test the clock keeps running across a reload: reloading must not buy time.
+  if (r.cur) { setCur({ ...r.cur, a: { cards: [], seats: [], vals: {}, roles: {} }, t0: r.sel ? r.cur.t0 : Date.now(), res: null }); render(); window.scrollTo(0, 0); } else next();
 }
 function header() {
   const info = ses.total ? `${Math.min(ses.done + (cur.res ? 0 : 1), ses.total)}/${ses.total}` : `${ses.ok}/${ses.done} giuste`;
   return h('div', { class: 'top' },
-    h('button', { class: 'back', 'data-act': 'exit' }, '‹ Esci'),
-    h('div', { class: 'info' }, `${TYPES[cur.type].n} · ${info} · `, h('span', { id: 'clock' }, cur.res ? (cur.res.ms / 1000).toFixed(1) + 's' : ses.timed ? TARGET[cur.type] + 's' : '0s')));
+    h('button', { class: 'back', 'data-act': ses.sel ? 'selexit' : 'exit' }, ses.sel ? '‹ Esaminatore' : '‹ Esci'),
+    h('div', { class: 'info' }, `${TYPES[cur.type].n} · ${info} · `, h('span', { id: 'clock' }, cur.res ? (cur.res.ms / 1000).toFixed(1) + 's' : ses.timed ? limit(cur.type) + 's' : '0s')));
 }
 function resultEl(r) {
   const chips = (r.rules || []).map(id => h('button', { class: 'chip', 'data-act': 'rule', 'data-v': id }, ruleLabel(id)));
@@ -350,7 +365,7 @@ const R = {
     const seats = q.table.seats.map(s =>
       zone('s' + s.n, `Posto ${s.n}`, { style: seatCell(s.n), kids: [q.table.button === s.n && h('i', { class: 'dbtn' }, 'D'), s.tag && h('span', { class: `tag ${s.tag === 'FOLD' ? 'fold' : ''}` }, s.tag)] }));
     const ids = [...new Set([...Object.keys(z), ...(done ? Object.keys(f.want) : [])])].filter(id => id[0] === 'p').sort();
-    const held = hand ? h('div', { class: 'fps' }, DT.DENOMS.map(v => pileEl(v, hand.chips.filter(c => c === v).length))) : h('span', { class: 'small' }, 'Niente');
+    const held = hand ? h('div', { class: 'fps' }, pilesFor(hand.chips)) : h('span', { class: 'small' }, 'Niente');
     return [qBox(q),
       label('Tocca una pila per contare le chips una a una, poi tocca dove posarle. Trascina per spostare la pila intera.'),
       h('div', { class: 'felt2' }, h('div', { class: 'you' }, 'TU'), seats, h('div', { class: 'pots' }, ids.map(id => zone(id, DT.potName(+id.slice(1)), { cls: 'potz' })), f.add && !done ? h('button', { class: 'btn addpot', 'data-act': 'addpot' }, '+ Side pot') : null)),
@@ -396,6 +411,7 @@ const R = {
 function render() {
   const k = DT.kindOf(cur.type, cur.q), body = (R[k] || R.num)();
   show(cur.review ? h('div', { class: 'top' }, h('button', { class: 'back', 'data-act': 'backsum' }, '‹ Riepilogo')) : header(), body, footer());
+  if (cur.fly) flyChips();
 }
 function confirmQ() {
   if (cur.res) return;
@@ -407,12 +423,16 @@ function confirmQ() {
 function finishQ(r) {
   cur.hand = null;
   r.ms = Date.now() - cur.t0;
-  record(cur.type, r.ok, r.ms);
-  if (cur.q.quiz) { const s = store.quizSeen[cur.q.id] || (store.quizSeen[cur.q.id] = { n: 0, ok: 0 }); s.n++; if (r.ok) s.ok++; }
-  srsResult(cur.q, cur.type, r.ok, cur.srsId);
+  // The selection test belongs to the candidate, not to the owner of the device: it stays out of stats and review.
+  if (!ses.sel) {
+    record(cur.type, r.ok, r.ms);
+    if (cur.q.quiz) { const s = store.quizSeen[cur.q.id] || (store.quizSeen[cur.q.id] = { n: 0, ok: 0 }); s.n++; if (r.ok) s.ok++; }
+    srsResult(cur.q, cur.type, r.ok, cur.srsId);
+  }
+  const area = ses.sel ? ses.plan[ses.done].area : undefined;
   ses.done++; ses.ms += r.ms; if (r.ok) ses.ok++; else ses.miss[cur.type] = (ses.miss[cur.type] || 0) + 1;
-  if (!r.ok || ses.exam) ses.log.push({ type: cur.type, q: cur.q, a: JSON.parse(JSON.stringify(cur.a)), ok: r.ok, srsId: cur.srsId });
-  buzz(r.ok ? 15 : [30, 40, 30]);
+  if (!r.ok || ses.exam) ses.log.push({ type: cur.type, q: cur.q, a: JSON.parse(JSON.stringify(cur.a)), ok: r.ok, srsId: cur.srsId, area, ms: r.ms, to: !!r.timeout });
+  if (!ses.exam) buzz(r.ok ? 15 : [30, 40, 30]);
   if (ses.exam) { persist(); return next(); }
   cur.res = r;
   persist();
@@ -422,6 +442,7 @@ function finishQ(r) {
 function summary() {
   clearInterval(timer);
   const s = ses; lastSummary = s; ses = null; cur = null; store.resume = null;
+  if (s.sel) return finishSel(s);
   const kind = s.exam ? 'exam' : s.timed ? 'timed' : null;
   if (kind && s.done) store.runs = (store.runs || []).concat({ k: kind, t: Date.now(), n: s.done, ok: s.ok, ms: s.ms, to: s.timeouts || 0 }).slice(-60);
   save();
@@ -440,7 +461,7 @@ function renderSummary() {
   const wrong = s.log.map((l, i) => ({ l, i })).filter(x => !x.l.ok);
   view = 'summary'; setChrome();
   const kind = s.exam ? 'exam' : s.timed ? 'timed' : null, hist = kind && runsTable(kind);
-  show(h('h1', null, 'Sessione finita'), h('p', { class: 'big' }, pct + '%'), h('p', null, `${s.ok} giuste su ${s.done}, ${avg} secondi a domanda.`),
+  show(h('h1', null, 'Sessione finita'), ringEl(pct, pct + '%', null, 'lg'), h('p', null, `${s.ok} giuste su ${s.done}, ${avg} secondi a domanda.`),
     s.exam ? h('p', { class: pct >= PASS ? 'verdict fast' : 'verdict slow' }, pct >= PASS ? `Promosso: la soglia è ${PASS}%.` : `Non ancora: la soglia è ${PASS}%, te ne mancano ${Math.max(1, Math.ceil(PASS / 100 * s.done) - s.ok)}.`) : null,
     s.timed ? h('p', null, s.timeouts ? `${s.timeouts} ${s.timeouts === 1 ? 'domanda scaduta' : 'domande scadute'} per il tempo.` : 'Nessuna domanda scaduta.') : null,
     hist ? [h('h2', null, s.exam ? 'Le ultime prove' : 'Le ultime sessioni a tempo'), hist] : null,
@@ -450,9 +471,11 @@ function renderSummary() {
     h('button', { class: 'btn primary', 'data-act': 'gohome' }, 'Torna al menu'));
   window.scrollTo(0, 0);
 }
+// A question that timed out has no answer to grade: it still has to open, as wrong.
+const reviewRes = (type, q, a) => grade(type, q, a) || { ...grade(type, q, DT.solve(type, q)), ok: false };
 function seeLog(i) {
   const l = lastSummary.log[i];
-  setCur({ type: l.type, q: l.q, a: l.a, res: grade(l.type, l.q, l.a), review: true, t0: 0 });
+  setCur({ type: l.type, q: l.q, a: l.a, res: reviewRes(l.type, l.q, l.a), review: true, t0: 0 });
   view = 'play'; setChrome(); render(); window.scrollTo(0, 0);
 }
 
@@ -609,23 +632,26 @@ function lastRun(kind) {
 }
 const totalAnswered = () => Object.values(store.stats).reduce((a, s) => a + s.n, 0);
 const backupDue = () => totalAnswered() >= 30 && Date.now() - (store.lastExport || 0) > BACKUP_DAYS * 864e5;
+const SPADE = 'M12 2C9 6 4 9.5 4 14a4 4 0 0 0 6.6 3c-.2 1.8-1 3.2-2.1 4.5h7c-1.1-1.3-1.9-2.7-2.1-4.5A4 4 0 0 0 20 14c0-4.5-5-8-8-12z';
+const ringEl = (p, txt, sub, cls) => h('div', { class: `ring ${cls || ''}`, style: `--p:${Math.max(0, Math.min(100, p))}` }, h('b', null, txt), sub ? h('span', null, sub) : null);
 function viewHome() {
   const keys = Object.keys(TYPES), st = streak(), d = store.days[today()], doneToday = d ? d.n : 0, due = dueItems().length, r = store.resume;
   const lv = (v, t) => h('button', { class: `btn ${store.level === v ? 'on' : ''}`, 'data-act': 'level', 'data-v': v }, t);
   const startBtn = (n, t) => h('button', { class: 'start', 'data-act': 'start', 'data-v': 'mix' + n }, h('b', null, String(n)), h('span', null, t));
   show(
-    h('h1', null, 'Trainer Dealer'),
-    h('p', null, st ? `${st} ${st === 1 ? 'giorno' : 'giorni'} di fila · ` : '', `Oggi ${doneToday}/${store.goal}`), meter(doneToday / store.goal * 100),
+    h('header', { class: 'hero' }, h('div', null, h('div', { class: 'mark' }, svg(SPADE)), h('h1', null, 'Trainer Dealer'), h('p', null, st ? `${st} ${st === 1 ? 'giorno' : 'giorni'} di fila` : 'Allenati come al tavolo')),
+      ringEl(doneToday / store.goal * 100, `${doneToday}/${store.goal}`, 'oggi')),
     r ? h('button', { class: 'tile alert', style: 'margin-top:12px', 'data-act': 'resume' }, h('b', null, 'Riprendi da dove eri'), h('span', null, r.total ? `${r.done} di ${r.total} fatte` : `${r.done} fatte, ${TYPES[r.cur ? r.cur.type : 'win'].n}`)) : null,
     backupDue() ? h('button', { class: 'tile alert', style: 'margin-top:12px', 'data-act': 'export' }, h('b', null, 'Salva i tuoi progressi'), h('span', null, store.lastExport ? `Non fai il backup da ${Math.floor((Date.now() - store.lastExport) / 864e5)} giorni. Se cambi telefono o il browser pulisce i dati, li perdi.` : 'Non hai mai fatto il backup. Se cambi telefono o il browser pulisce i dati, perdi tutto.')) : null,
     h('h2', null, 'Hai un momento? Quante domande?'),
     h('div', { class: 'starts' }, startBtn(5, '2 minuti'), startBtn(10, '5 minuti'), startBtn(20, '10 minuti')),
     h('div', { class: 'seg scroll', style: 'margin-top:10px' }, Object.keys(FOCUS).map(k => h('button', { class: `btn ${store.focus === k ? 'on' : ''}`, 'data-act': 'focus', 'data-v': k }, FOCUS[k]))),
-    h('div', { class: 'tiles', style: 'margin-top:10px' },
+    h('div', { class: 'tiles modes', style: 'margin-top:10px' },
       h('button', { class: `tile ${due ? 'alert' : ''}`, 'data-act': 'start', 'data-v': 'review', disabled: !due }, h('b', null, 'Ripasso errori'), h('span', null, due ? `${due} da rifare adesso` : store.srs.length ? `${store.srs.length} in attesa, tornano da soli` : 'Nessun errore da rifare'),
         store.srs.length >= SRS_MAX * .9 ? h('span', { class: 'warnline' }, `Coda quasi piena (${store.srs.length}/${SRS_MAX}): poi spariscono i più vecchi`) : null),
       h('button', { class: 'tile', 'data-act': 'start', 'data-v': 'timed10' }, h('b', null, 'A tempo'), h('span', null, '10 domande con il conto alla rovescia'), lastRun('timed')),
       h('button', { class: 'tile', 'data-act': 'start', 'data-v': 'exam' }, h('b', null, 'Prova senza aiuti'), h('span', null, `20 domande, spiegazioni alla fine, si passa con ${PASS}%`), lastRun('exam'))),
+    h('button', { class: 'tile selcard', 'data-act': 'gosel' }, h('b', null, 'Prova di selezione'), h('span', null, 'Per le sale: stessa prova per ogni candidato, con l\'esaminatore presente e il report da stampare')),
     ['p', 'c', 'a', 't'].map(g => [h('h2', null, GROUPS[g]), h('div', { class: 'tiles' }, keys.filter(k => TYPES[k].g === g).map(tile))]),
     h('h2', null, 'Difficoltà'),
     h('div', { class: 'seg' }, lv('auto', 'Automatica'), lv('easy', 'Facile'), lv('normal', 'Normale'), lv('hard', 'Difficile')),
@@ -701,16 +727,121 @@ function viewInfo() {
     h('p', null, 'Trainer Dealer è un\'app di allenamento non ufficiale e non è affiliata al Poker TDA.'),
     h('p', null, 'Il testo inglese delle 74 regole è la 2026 Rules Version 1.1, Sept 21, 2026 (la 1.0 era del 6 settembre). Le Procedure Raccomandate, l\'Illustration Addendum e il Glossario sono ancora quelli della 1.0: la 1.1, secondo il TDA, corregge soprattutto rimandi interni, e le differenze nelle regole sono segnalate nei riquadri "Da sapere". La traduzione italiana è di Fabiano Stefanini con revisione di Jacopo Marcelletti, ed è quella della 1.0. Il testo è stato ripreso tramite TDA Guide (tdaguide.com), toccando solo la tipografia, e le regole sono state ricontrollate sul sito del TDA. Alcuni numeri di regola citati nel testo sono rimasti quelli dell\'edizione precedente: il link porta comunque alla regola giusta. I riquadri "Da sapere" non fanno parte del regolamento: segnalano dove la traduzione italiana si discosta dal testo inglese, che fa fede.'),
     h('p', null, 'Quiz e spiegazioni sono riassunti scritti per l\'allenamento: in caso di dubbio fa fede il testo ufficiale. Al tavolo decidono le regole della tua sala e il floor.'),
+    h('p', null, 'La prova di selezione va fatta in sala con l\'esaminatore presente: i risultati restano su questo dispositivo, non vanno su nessun server, e l\'esito è indicativo. La decisione spetta sempre a una persona.'),
+    h('p', null, 'Titoli in Playfair Display, licenza SIL Open Font License 1.1.'),
     creditEl());
   window.scrollTo(0, 0);
 }
+// ---------- selection test ----------
+// shortcut: the PIN only keeps the candidate away from the report; results sit unencrypted in this browser. A remote or tamper-proof test needs a server.
+let examiner = false, pending = null, lastRep = null;
+const inputRow = (id, text, value, o) => h('div', { class: 'lab' }, h('label', { for: id }, text), h('input', { id, value: value || '', autocomplete: 'off', ...o }));
+const newCode = () => Array.from({ length: 6 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join('');
+const val = id => document.getElementById(id).value.trim();
+const dateTime = t => new Date(t).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+const minSec = ms => `${Math.floor(ms / 60000)} min ${Math.round(ms / 1000 % 60)} s`;
+const nQ = () => DT.SEL.areas.reduce((s, a) => s + a.t.length, 0);
+const nMin = () => Math.round(DT.SEL.areas.reduce((s, a) => s + a.t.reduce((x, t) => x + TARGET[t], 0), 0) / 60);
+const verdictTxt = s => s.pass ? 'Sopra soglia' : s.answered < s.total ? 'Prova incompleta' : 'Sotto soglia';
+function askPin(text, then) {
+  const inp = h('input', { type: 'password', inputmode: 'numeric', autocomplete: 'off', 'aria-label': 'PIN esaminatore', class: 'pin' }), err = h('p', { class: 'hint' });
+  const undo = h('button', { class: 'btn', type: 'button' }, 'Annulla');
+  const form = h('form', null, h('b', null, text), inp, err, h('div', { class: 'twobtn' }, undo, h('button', { class: 'btn on', type: 'submit' }, 'Conferma')));
+  const d = h('dialog', { class: 'pinbox' }, form);
+  d.onclose = () => d.remove();
+  undo.onclick = () => d.close();
+  form.onsubmit = e => { e.preventDefault(); if (inp.value === store.selPin) { d.close(); then(); } else { err.textContent = 'PIN sbagliato.'; inp.value = ''; } };
+  document.body.append(d); d.showModal();
+}
+function viewSel() {
+  const top = h('div', { class: 'top' }, h('button', { class: 'back', 'data-act': 'gohome' }, '‹ Menu'));
+  const intro = h('p', null, `${nQ()} situazioni da dealer in circa ${nMin()} minuti, su punti, piatti, calcoli, procedura e regolamento. Lo stesso codice dà la stessa identica prova, così i candidati si confrontano alla pari.`);
+  if (!store.selPin) return show(top, h('h1', null, 'Prova di selezione'), intro, inputRow('selpin', 'Scegli il PIN dell\'esaminatore, da 4 a 8 cifre', '', { type: 'password', inputmode: 'numeric' }), h('div', { class: 'hint', id: 'hint' }), h('button', { class: 'btn primary', 'data-act': 'selsetpin' }, 'Crea il PIN'));
+  if (!examiner) return show(top, h('h1', null, 'Area esaminatore'), inputRow('selpin', 'PIN esaminatore', '', { type: 'password', inputmode: 'numeric' }), h('div', { class: 'hint', id: 'hint' }), h('button', { class: 'btn primary', 'data-act': 'selenter' }, 'Entra'));
+  const d = store.selDef, rows = store.sels.slice().reverse();
+  show(top, h('h1', null, 'Prova di selezione'), intro,
+    h('h2', null, 'Nuova prova'),
+    inputRow('selname', 'Candidato', ''), inputRow('selsala', 'Sala', d.sala), inputRow('selex', 'Esaminatore', d.ex),
+    h('div', { class: 'codeline' }, inputRow('selcode', 'Codice prova', d.code || newCode(), { autocapitalize: 'characters' }), h('button', { class: 'btn', 'data-act': 'selnewcode' }, 'Nuovo codice')),
+    h('p', { class: 'small' }, 'Tieni lo stesso codice per tutti i candidati di una selezione, poi cambialo: chi l\'ha già fatta non deve poterla raccontare a chi arriva dopo.'),
+    h('div', { class: 'hint', id: 'hint' }),
+    h('button', { class: 'btn primary', 'data-act': 'selgo' }, 'Passa il dispositivo al candidato'),
+    rows.length ? [h('h2', null, 'Candidati'), h('div', { class: 'list' }, rows.map(r => h('button', { class: 'row', 'data-act': 'selrep', 'data-v': r.id }, h('span', { class: 'n' }, r.score.pct + '%'), h('span', { class: 'x' }, r.name, h('span', { class: 'snip' }, `${verdictTxt(r.score)} · codice ${r.code} · ${dateTime(r.at)}`))))),
+      h('button', { class: 'btn wide', 'data-act': 'selcsv' }, 'Esporta tutti per Excel')] : null);
+  window.scrollTo(0, 0);
+}
+function selIntro() {
+  view = 'selintro'; setChrome();
+  show(h('header', { class: 'hero' }, h('div', null, h('div', { class: 'mark' }, svg(SPADE)), h('h1', null, 'Prova di selezione'), h('p', null, pending.sala || 'Trainer Dealer'))),
+    h('h2', null, pending.name),
+    h('ul', { class: 'rules' }, [`${nQ()} situazioni, circa ${nMin()} minuti.`, 'Ogni situazione ha il suo tempo: se scade, conta come errore.', 'Niente spiegazioni e niente punteggio durante la prova, e non si torna indietro.', 'Con le chips: tocca una pila per prenderle una a una e tocca dove posarle, oppure trascina la pila intera.', 'Resta nell\'app: ogni uscita finisce nel report.'].map(t => h('li', null, t))),
+    h('button', { class: 'btn primary', 'data-act': 'selstart' }, 'Inizia la prova'));
+  window.scrollTo(0, 0);
+}
+function startSel() {
+  const plan = DT.selectionPlan(pending.code);
+  start('sel', { total: plan.length, exam: true, timed: true, plan, sel: { ...pending, at: Date.now(), away: 0, awayMs: 0, reloads: 0 } });
+  if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(() => { /* the screen may dim, the test goes on */ });
+}
+function finishSel(s) {
+  const items = s.log.map(l => ({ type: l.type, area: l.area, ok: l.ok, ms: l.ms, to: l.to, ...(l.ok ? {} : { q: l.q, a: l.a }) }));
+  const rep = { id: Date.now().toString(36), ...s.sel, ver: APP_VERSION, ms: Date.now() - s.sel.at, items, score: DT.scoreSelection(items) };
+  store.sels.push(rep); lastRep = rep.id; save();
+  view = 'handover'; setChrome();
+  show(h('header', { class: 'hero' }, h('div', null, h('div', { class: 'mark' }, svg(SPADE)), h('h1', null, s.sel.stopped ? 'Prova interrotta' : 'Prova consegnata'), h('p', null, `Grazie, ${s.sel.name}.`))),
+    h('p', null, 'Ridai il dispositivo all\'esaminatore.'), h('button', { class: 'btn primary', 'data-act': 'gosel' }, 'Sono l\'esaminatore'));
+  window.scrollTo(0, 0);
+}
+function lockedView() {
+  view = 'handover'; setChrome();
+  show(h('h1', null, 'Prova in corso'), h('p', null, 'La prova si è chiusa e riparte solo con l\'esaminatore. Il tempo non si è fermato e la chiusura finisce nel report.'), h('button', { class: 'btn primary', 'data-act': 'selback' }, 'Riprendi con il PIN'));
+}
+function viewReport(id) {
+  const r = store.sels.find(x => x.id === id);
+  if (!r || !examiner) { location.hash = '#/prova'; return; }
+  const s = r.score, meta = [['Candidato', r.name], ['Sala', r.sala || '-'], ['Esaminatore', r.ex || '-'], ['Data', dateTime(r.at)], ['Durata', minSec(r.ms)], ['Codice prova', r.code], ['Versione app', r.ver]];
+  const wrong = r.items.map((x, i) => ({ x, i })).filter(({ x }) => !x.ok);
+  const events = r.away || r.reloads ? `Uscite dall'app: ${r.away} (${minSec(r.awayMs)} fuori). Chiusure e riaperture: ${r.reloads}.` : 'Nessuna uscita dall\'app durante la prova.';
+  show(h('div', { class: 'top noprint' }, h('button', { class: 'back', 'data-act': 'gosel' }, '‹ Candidati')),
+    h('article', { class: 'paper' },
+      h('header', { class: 'phead' }, h('div', { class: 'mark' }, svg(SPADE)), h('div', null, h('b', null, 'Trainer Dealer'), h('span', null, 'Report della prova di selezione'))),
+      h('dl', { class: 'meta' }, meta.map(([k, v]) => h('div', null, h('dt', null, k), h('dd', null, v)))),
+      h('section', { class: 'score' }, h('div', { class: 'pct' }, s.pct + '%'), h('div', null, h('b', { class: s.pass ? 'okc' : 'noc' }, verdictTxt(s)), h('p', null, `${s.ok} giuste su ${s.total}. Soglia: ${DT.SEL.pass}% in totale e ${DT.SEL.areaMin}% in ogni area.`), r.stopped ? h('p', null, `Interrotta dall'esaminatore dopo ${s.answered} situazioni.`) : null)),
+      h('h3', null, 'Per area'),
+      h('div', { class: 'areas' }, s.areas.map(a => h('div', { class: 'arow' }, h('span', null, a.n), h('i', { class: 'abar', style: `--p:${a.pct}%;--m:${DT.SEL.areaMin}%` }, h('u', { class: a.pct >= DT.SEL.areaMin ? 'okb' : 'nob' })), h('b', null, `${a.ok}/${a.total}`)))),
+      h('h3', null, 'Tempi e regolarità'),
+      h('p', null, `Nei tempi obiettivo: ${s.inTime} su ${s.answered}. Tempo scaduto: ${s.timeouts}. ${events}`),
+      h('h3', null, 'Situazione per situazione'),
+      h('table', { class: 'ptable' }, h('tr', null, ['N.', 'Esercizio', 'Esito', 'Secondi'].map(x => h('th', null, x))), r.items.map((x, i) => h('tr', null, h('td', null, String(i + 1)), h('td', null, TYPES[x.type].n), h('td', { class: x.ok ? 'okc' : 'noc' }, x.ok ? 'Giusta' : x.to ? 'Tempo scaduto' : 'Sbagliata'), h('td', null, (x.ms / 1000).toFixed(1))))),
+      h('section', { class: 'hands' }, h('h3', null, 'Da valutare al tavolo'), h('p', null, 'L\'app non vede le mani. Queste voci le giudica l\'esaminatore con una prova dal vivo.'),
+        h('ul', { class: 'checks' }, ['Pitch delle carte', 'Taglio e conteggio delle chips', 'Gestione dal vivo di piatti e side pot', 'Ritmo del gioco', 'Tenuta e comportamento con i giocatori'].map(t => h('li', null, t))),
+        h('div', { class: 'signs' }, h('span', null, 'Firma esaminatore'), h('span', null, 'Firma candidato'))),
+      h('footer', null, 'L\'esito è indicativo: la decisione spetta alla sala. Strumento non ufficiale, non affiliato al Poker TDA. TDA rules used by permission of the Poker TDA, Copyright 2026, www.pokertda.com, All rights reserved.')),
+    h('div', { class: 'noprint' },
+      h('button', { class: 'btn primary', 'data-act': 'selprint' }, 'Stampa o salva in PDF'),
+      wrong.length ? [h('h2', null, 'Rivedi gli errori'), h('div', { class: 'list' }, wrong.map(({ x, i }) => h('button', { class: 'row', 'data-act': 'seerep', 'data-v': i }, h('span', { class: 'n' }, String(i + 1)), h('span', { class: 'x' }, TYPES[x.type].n, h('span', { class: 'snip' }, x.area)))))] : null,
+      h('button', { class: 'btn wide', 'data-act': 'seldel', 'data-v': r.id }, 'Elimina questo report')));
+  window.scrollTo(0, 0);
+}
+function exportCsv() {
+  // A name starting with = + - @ would run as a formula in Excel.
+  const cell = x => { const t = String(x).replace(/"/g, '""'); return `"${/^[=+\-@]/.test(t) ? "'" + t : t}"`; };
+  const head = ['Candidato', 'Sala', 'Esaminatore', 'Data', 'Codice', 'Punteggio %', 'Giuste', 'Totale', ...DT.SEL.areas.map(a => a.n + ' %'), 'Esito', 'Uscite dall\'app', 'Riaperture'];
+  const rows = store.sels.map(r => [r.name, r.sala, r.ex, dateTime(r.at), r.code, r.score.pct, r.score.ok, r.score.total, ...r.score.areas.map(a => a.pct), verdictTxt(r.score), r.away, r.reloads]);
+  const url = URL.createObjectURL(new Blob(['\ufeff' + [head, ...rows].map(x => x.map(cell).join(';')).join('\r\n')], { type: 'text/csv' }));
+  const a = h('a', { href: url, download: `candidati-${today()}.csv` }); document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
 function setChrome() {
-  document.body.classList.toggle('play', view === 'play');
+  document.body.classList.toggle('play', ['play', 'selintro', 'handover', 'report'].includes(view));
   const tabs = [['home', 'Allenati', 'M4 11l8-7 8 7v9h-5v-6h-6v6H4z'], ['tda', 'TDA', 'M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11'], ['stats', 'Progressi', 'M5 20v-7M12 20V5M19 20v-10'], ['settings', 'Impostazioni', 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4']];
   tabsEl.replaceChildren(...tabs.map(([v, t, d]) => h('button', { class: view === v || (v === 'tda' && view === 'rule') ? 'on' : '', 'data-tab': v, 'aria-current': view === v ? 'page' : null }, svg(d), t)));
 }
 function route() {
   const p = location.hash.replace(/^#/, '') || '/';
+  // While a candidate is on the test nothing leads out of it, not even the back button.
+  if (ses && ses.sel && p !== '/play') { location.hash = '#/play'; return; }
+  if (!ses && store.resume && store.resume.sel) return lockedView();
   const sheet = p.match(/^\/play\/r\/(.+)$/);
   if (p === '/play' || sheet) {
     if (!cur) { location.hash = '#/'; return; }
@@ -723,6 +854,9 @@ function route() {
   if (ses) { persist(); ses = null; cur = null; }
   const r = p.match(/^\/r\/(.+)$/);
   if (r) { view = 'rule'; setChrome(); viewRule(r[1]); return; }
+  const rep = p.match(/^\/prova\/r\/(.+)$/);
+  if (rep) { view = 'report'; setChrome(); viewReport(rep[1]); return; }
+  if (p === '/prova') { view = 'sel'; setChrome(); viewSel(); return; }
   view = { '/tda': 'tda', '/stats': 'stats', '/settings': 'settings', '/info': 'info' }[p] || 'home';
   setChrome();
   ({ tda: viewTDA, stats: viewStats, settings: viewSettings, info: viewInfo, home: viewHome })[view]();
@@ -753,7 +887,30 @@ function onClick(e) {
     case 'next': return next();
     case 'same': return next(true);
     case 'seelog': return seeLog(+v);
-    case 'backsum': cur = null; return renderSummary();
+    case 'backsum': { const rep = cur && cur.rep; cur = null; return rep ? go('#/prova/r/' + rep) : renderSummary(); }
+    case 'gosel': return go('#/prova');
+    case 'selsetpin': { const p = val('selpin'); if (!/^\d{4,8}$/.test(p)) { document.getElementById('hint').textContent = 'Servono da 4 a 8 cifre.'; return; } store.selPin = p; save(); examiner = true; return viewSel(); }
+    case 'selenter': if (val('selpin') !== store.selPin) { document.getElementById('hint').textContent = 'PIN sbagliato.'; return; } examiner = true; if (lastRep) { const id = lastRep; lastRep = null; return go('#/prova/r/' + id); } return viewSel();
+    case 'selnewcode': document.getElementById('selcode').value = newCode(); return;
+    case 'selgo': {
+      const name = val('selname'), sala = val('selsala'), ex = val('selex'), code = val('selcode').toUpperCase();
+      const bad = !name ? 'Scrivi il nome del candidato.' : !/^[A-Z0-9]{4,10}$/.test(code) ? 'Il codice prova va da 4 a 10 lettere o cifre.' : '';
+      if (bad) { document.getElementById('hint').textContent = bad; return; }
+      store.selDef = { sala, ex, code }; save(); pending = { name, sala, ex, code }; examiner = false;
+      return selIntro();
+    }
+    case 'selstart': return startSel();
+    case 'selexit': return askPin('Interrompere la prova? Serve il PIN dell\'esaminatore.', () => { ses.sel.stopped = true; summary(); });
+    case 'selback': return askPin('PIN esaminatore', resume);
+    case 'selrep': return go('#/prova/r/' + v);
+    case 'selcsv': return exportCsv();
+    case 'selprint': return window.print();
+    case 'seldel': if (confirm('Elimino questo report? Non si potrà recuperare.')) { store.sels = store.sels.filter(x => x.id !== v); save(); go('#/prova'); } return;
+    case 'seerep': {
+      const id = location.hash.split('/').pop(), it = store.sels.find(x => x.id === id).items[+v], a = it.a || {};
+      setCur({ type: it.type, q: it.q, a: { cards: [], seats: [], vals: {}, roles: {}, ...a }, res: reviewRes(it.type, it.q, a), review: true, t0: 0, rep: id });
+      view = 'play'; setChrome(); render(); window.scrollTo(0, 0); return;
+    }
     case 'tdatab': tdaTab = v; tdaQuery = ''; return viewTDA();
     case 'open': return go('#/r/' + v);
     case 'lang': store.lang = store.lang === 'en' ? 'it' : 'en'; save(); return refreshRule();
@@ -763,7 +920,7 @@ function onClick(e) {
     case 'install': if (installEvent) { installEvent.prompt(); installEvent.userChoice.finally(() => { installEvent = null; viewSettings(); }); } return;
     case 'export': return exportData();
     case 'import': return document.getElementById('importfile').click();
-    case 'reset': if (confirm('Azzero statistiche, errori e preferiti su questo dispositivo?')) { const keep = store; store = blankStore(); store.goal = keep.goal; save(); viewSettings(); toast('Fatto, si riparte da zero.'); } return;
+    case 'reset': if (confirm('Azzero statistiche, errori e preferiti su questo dispositivo?')) { const keep = store; store = blankStore(); store.goal = keep.goal; store.sels = keep.sels; store.selPin = keep.selPin; store.selDef = keep.selDef; save(); viewSettings(); toast('Fatto, si riparte da zero.'); } return;
   }
   if (!cur || cur.res) return;
   if (act === 'seat') { const i = +v, s = cur.a.seats; s.includes(i) ? s.splice(s.indexOf(i), 1) : s.push(i); }
@@ -817,6 +974,12 @@ function importData(file) {
 }
 document.addEventListener('click', e => { if (skipClick) { skipClick = false; e.stopPropagation(); } }, true);
 document.addEventListener('click', onClick);
+let leftAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (!ses || !ses.sel) return;
+  if (document.hidden) { leftAt = Date.now(); ses.sel.away++; } else if (leftAt) { ses.sel.awayMs += Date.now() - leftAt; leftAt = 0; }
+  persist();
+});
 document.addEventListener('pointerdown', e => {
   if (!cur || cur.res || !cur.q.felt) return;
   const p = e.target.closest('[data-grab],[data-act=chip]');
@@ -834,6 +997,7 @@ document.addEventListener('pointerup', e => {
   if (!cur || cur.res) return;
   const t = document.elementFromPoint(e.clientX, e.clientY), to = t && t.closest('[data-z]');
   if (to) placeHand(to.dataset.z); else cur.hand = d.had;
+  cur.fly = null;
   render();
 });
 document.addEventListener('pointercancel', () => { if (!drag) return; if (drag.ghost) { drag.ghost.remove(); if (cur) { cur.hand = drag.had; render(); } } drag = null; });
@@ -853,7 +1017,7 @@ document.addEventListener('focusin', e => {
 });
 document.addEventListener('change', e => { if (e.target.id === 'importfile' && e.target.files[0]) importData(e.target.files[0]); });
 document.addEventListener('keydown', e => {
-  if (view !== 'play' || !cur || !sheetEl.hidden) return;
+  if (view !== 'play' || !cur || !sheetEl.hidden || e.target.closest('dialog')) return;
   if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') { e.preventDefault(); if (cur.review) return; cur.res ? next() : confirmQ(); return; }
   if (TYPES[cur.type].k === 'choice' && !cur.res && /^[1-9]$/.test(e.key) && e.target.tagName !== 'INPUT') { const i = +e.key - 1; if (cur.q.options[i]) { cur.a.opt = i; render(); } }
 });

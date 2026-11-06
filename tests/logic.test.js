@@ -255,6 +255,54 @@ ok('chips sul tavolo: si conservano, il cambio arriva a ogni importo, le mosse n
   assert.deepStrictEqual(L.breakChips({ a: [1000] }, 'a', [1000], 1000), { a: [1000] });
   assert.strictEqual(L.grade('pot', { fields: [{ answer: 1 }], steps: [], rules: [] }, { vals: ['1'] }).ok, true, 'vecchio errore salvato senza tavolo');
 });
+ok('prova di selezione: stesso codice stessa prova, composizione fissa, punteggio', () => {
+  const a = JSON.stringify(L.selectionPlan('ABC123')), b = JSON.stringify(L.selectionPlan('ABC123')), c = JSON.stringify(L.selectionPlan('ZZZ999'));
+  assert.strictEqual(a, b, 'lo stesso codice deve dare la stessa prova');
+  assert.notStrictEqual(a, c, 'codici diversi, prove diverse');
+  assert(L.GEN.win('easy') !== undefined && JSON.stringify(L.GEN.pot('normal')) !== JSON.stringify(L.GEN.pot('normal')), 'fuori dalla prova il caso deve tornare davvero casuale');
+  for (let i = 0; i < 60; i++) {
+    const code = 'T' + i, plan = L.selectionPlan(code), total = L.SEL.areas.reduce((s, x) => s + x.t.length, 0);
+    assert.strictEqual(plan.length, total);
+    for (const x of L.SEL.areas) assert.deepStrictEqual(plan.filter(p => p.area === x.n).map(p => p.type).sort(), x.t.slice().sort());
+    const ids = plan.filter(p => p.type === 'quiz').map(p => p.q.id);
+    assert.strictEqual(new Set(ids).size, ids.length, 'quiz doppi in una prova');
+    for (const p of plan) assert.strictEqual(L.grade(p.type, p.q, L.solve(p.type, p.q)).ok, true, 'risolvibile ' + p.type);
+  }
+  const plan = L.selectionPlan('X1'), all = ok => plan.map(p => ({ area: p.area, type: p.type, ok, ms: 1000, to: false }));
+  const full = L.scoreSelection(all(true));
+  assert.strictEqual(full.pct, 100); assert.strictEqual(full.pass, true); assert.strictEqual(full.inTime, plan.length);
+  assert.strictEqual(L.scoreSelection(all(false)).pass, false);
+  // an excellent total does not hide a hole in one area
+  const hole = all(true).map(x => x.area === 'Calcoli di puntata' ? { ...x, ok: false } : x), s = L.scoreSelection(hole);
+  assert(s.pct >= L.SEL.pass && !s.pass, 'soglia per area ' + s.pct);
+  // unanswered counts as wrong, and an unfinished test never passes
+  const part = L.scoreSelection(all(true).slice(0, 34)); assert.strictEqual(part.answered, 34); assert.strictEqual(part.total, 35); assert.strictEqual(part.pass, false);
+  const late = L.scoreSelection(all(true).map(x => ({ ...x, ms: 999999 }))); assert.strictEqual(late.inTime, 0);
+});
+ok('glossario: ogni voce ha l\'inglese del suo termine', () => {
+  const G = id => TDA.items[id];
+  assert.strictEqual(G('G14').enTitle, 'BTN'); assert.strictEqual(G('G15').enTitle, 'CO'); assert.strictEqual(G('G28').enTitle, 'SA'); assert.strictEqual(G('G22').enTitle, 'On the bubble');
+  assert.strictEqual(G('G2').enText, null); assert.strictEqual(G('G11').title, '2-7 SD'); assert(/Optimal/.test(G('G35').text));
+  Object.values(TDA.items).filter(x => x.s === 'glossary' && x.enText).forEach(x => assert(x.enTitle, x.id));
+});
+ok('selezione: mai due fiches dispari, che la regola 21 non prevede', () => {
+  for (let i = 0; i < 400; i++) {
+    const odd = L.selectionPlan('O' + i).find(p => p.type === 'odd').q, pays = Object.entries(odd.felt.want).filter(([k]) => k[0] === 's').map(([, v]) => v);
+    assert(Math.max(...pays) - Math.min(...pays) === odd.felt.min, 'resto diverso da una fiche ' + JSON.stringify(odd.felt.want));
+    assert.strictEqual(pays.filter(v => v === Math.max(...pays)).length, 1, 'una sola fiche in più ' + JSON.stringify(odd.felt.want));
+  }
+});
+ok('pagamenti: il principale dopo i side pot', () => {
+  assert(L.payOrderOk(['p2', 'p1', 'p0', 'p0'])); assert(L.payOrderOk(['p1', 's3', 'p0'])); assert(L.payOrderOk([])); assert(L.payOrderOk(undefined));
+  assert(!L.payOrderOk(['p0', 'p1'])); assert(!L.payOrderOk(['p1', 'p0', 'p1']));
+  for (let i = 0; i < 200; i++) {
+    const q = L.GEN.pay('hard'), a = L.solve('pay', q), side = Object.keys(q.felt.want).filter(k => k[0] === 'p' && k !== 'p0');
+    if (!side.length) continue;
+    assert.strictEqual(L.grade('pay', q, { ...a, seq: [...side, 'p0'] }).ok, true);
+    const r = L.grade('pay', q, { ...a, seq: ['p0', ...side] });
+    assert.strictEqual(r.ok, false); assert(/prima i side pot/.test(r.steps[0]));
+  }
+});
 ok('solve(): la risposta calcolata viene sempre giudicata giusta', () => {
   for (const type of Object.keys(L.GEN)) for (let i = 0; i < 300; i++) {
     const q = L.GEN[type]('normal');
