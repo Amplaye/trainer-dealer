@@ -106,8 +106,22 @@ let base;
   if (await inZ('s1') !== '500,1000,1000') errs.push('il tocco non deve spostare finché non posi');
   await p.click('.zone[data-z=p0] .zh');
   if (await inZ('p0') !== '1000,1000' || await inZ('s1') !== '500') errs.push('tocca e posa');
-  await p.click('[data-z=s2][data-v="5000"]'); await p.click('button[data-z=change]');
+  await p.click('[data-z=s2][data-v="5000"]');
+  if (!await p.evaluate(() => document.querySelector('[data-z=change][data-to="5000"]').disabled)) errs.push('cambio nello stesso taglio attivo');
+  await p.click('[data-z=change][data-to="1000"]');
   if (await inZ('s2') !== '1000,1000,1000,1000,1000') errs.push('cambio');
+  for (let i = 0; i < 5; i++) await p.click('[data-z=s2][data-v="1000"]');
+  await p.click('[data-z=change][data-to="5000"]');
+  if (await inZ('s2') !== '5000') errs.push('cambio verso l\'alto');
+  await p.click('[data-z=s2][data-v="5000"]'); await p.click('[data-z=change][data-to="500"]');
+  if (await inZ('s2') !== Array(10).fill(500).join()) errs.push('cambio diretto di due tagli');
+  await p.click('[data-z=s2][data-v="500"]');
+  if (await p.textContent('.hand .sum') !== '500') errs.push('in allenamento si vede il totale in mano');
+  await p.evaluate(() => { ses.exam = true; render(); });
+  if (await p.$('.hand .sum')) errs.push('nella prova il totale in mano non si vede');
+  await p.evaluate(() => { ses.exam = false; render(); });
+  await p.click('[data-act=putback]');
+  await p.evaluate(() => { cur.a.z = { ...cur.a.z, s2: [1000, 1000, 1000, 1000, 1000] }; render(); });
   await p.click('[data-z=s2][data-v="1000"]'); await p.click('[data-act=putback]');
   if (await p.evaluate(() => cur.hand)) errs.push('rimetti giù');
   await p.click('[data-act=addpot]'); if (!await p.$('.zone[data-z=p1]')) errs.push('side pot non aperto');
@@ -262,6 +276,9 @@ let base;
 
   // timed session: countdown, a timeout counts as missed and still shows the answer
   await p.click('[data-act=start][data-v=timed10]'); await p.waitForSelector('[data-act=confirm]');
+  await p.evaluate(() => { cur.t0 = Date.now() + 5000; render(); });
+  if (await p.textContent('#clock') !== 'lettura') errs.push('il testo si legge a orologio fermo');
+  await p.evaluate(() => { cur.t0 = Date.now(); render(); });
   const clock0 = await p.textContent('#clock'); if (!/^\d+s$/.test(clock0)) errs.push('conto alla rovescia: ' + clock0);
   await p.evaluate(() => { cur.t0 -= 200000; }); await p.waitForSelector('.res', { timeout: 3000 });
   if (await verdict(p) !== 'Sbagliato') errs.push('tempo scaduto non segnato sbagliato');
@@ -349,6 +366,28 @@ let base;
   console.log('migrazione dati vecchi ok');
 
   // desktop
+  // phone: the button to confirm is on screen without scrolling; desktop: the table sits beside the answer and nothing scrolls
+  const reach = await b.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true }); const rp = await reach.newPage();
+  await rp.goto(base); await rp.waitForSelector('.start');
+  for (const t of TYPES) {
+    await rp.click(`[data-act=start][data-v=${t}]`); await rp.waitForSelector('[data-act=confirm]');
+    const y = await rp.evaluate(() => document.querySelector('[data-act=confirm]').getBoundingClientRect().bottom);
+    if (y > 844) errs.push(`telefono ${t}: Conferma fuori schermo a ${y}px`);
+    await rp.click('[data-act=exit]'); await rp.waitForSelector('.start');
+  }
+  await reach.close();
+  const wide = await b.newContext({ viewport: { width: 1440, height: 900 } }); const wp = await wide.newPage();
+  await wp.goto(base); await wp.waitForSelector('.start');
+  for (const t of TYPES) {
+    await wp.click(`[data-act=start][data-v=${t}]`); await wp.waitForSelector('[data-act=confirm]');
+    const m = await wp.evaluate(() => { const s = document.querySelector('.stage'), a = document.querySelector('.ask'); return { side: !s || s.getBoundingClientRect().right <= a.getBoundingClientRect().left, over: document.documentElement.scrollHeight - innerHeight }; });
+    if (!m.side) errs.push('desktop ' + t + ': tavolo e domanda non affiancati');
+    if (m.over > 0) errs.push(`desktop ${t}: ${m.over}px da scorrere`);
+    await wp.click('[data-act=exit]'); await wp.waitForSelector('.start');
+  }
+  await wide.close();
+  console.log('tasto a portata e desktop affiancato ok');
+
   const c2 = await b.newContext({ viewport: { width: 1200, height: 860 } }); const d = await c2.newPage();
   d.on('pageerror', e => errs.push('JS desktop: ' + e.message));
   await drill(d, 'd', false, false);

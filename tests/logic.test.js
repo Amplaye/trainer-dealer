@@ -243,7 +243,7 @@ ok('chips sul tavolo: si conservano, il cambio arriva a ogni importo, le mosse n
     Object.values(f.z).flat().forEach(c => assert(L.DENOMS.includes(c) && c >= f.min, 'taglio ' + js));
     // Break everything down to the smallest chip, then deal it out with legal moves only: the answer must be reachable.
     let z = JSON.parse(JSON.stringify(f.z));
-    for (const id of Object.keys(z)) for (let g = 0; g < 6; g++) z = L.breakChips(z, id, z[id].slice(), f.min);
+    for (const id of Object.keys(z)) z = L.changeChips(z, id, z[id].slice(), f.min, f.min);
     assert.strictEqual(sum(z), sum(f.z), 'il cambio altera il totale ' + js);
     const pool = Object.keys(z).flatMap(id => z[id].map(c => [id, c]));
     for (const [id, w] of Object.entries(f.want)) { let need = w; while (need > 0) { const [from, c] = pool.pop(); z = L.moveChips(z, from, [c], '_' + id); need -= c; } assert.strictEqual(need, 0, 'resto ' + js); }
@@ -251,8 +251,28 @@ ok('chips sul tavolo: si conservano, il cambio arriva a ogni importo, le mosse n
     assert(L.feltOk(f, done), 'non raggiungibile ' + js);
   }
   assert.throws(() => L.moveChips({ a: [100], b: [] }, 'a', [500], 'b'));
-  assert.deepStrictEqual(L.breakChips({ a: [100] }, 'a', [100], 100), { a: [100] });
-  assert.deepStrictEqual(L.breakChips({ a: [1000] }, 'a', [1000], 1000), { a: [1000] });
+  assert.deepStrictEqual(L.changeChips({ a: [100] }, 'a', [100], 100, 100), { a: [100] }, 'stesso taglio: niente da cambiare');
+  assert.deepStrictEqual(L.changeChips({ a: [1000] }, 'a', [1000], 500, 1000), { a: [1000] }, 'sotto il taglio minimo no');
+  assert.deepStrictEqual(L.changeChips({ a: [25000, 100] }, 'a', [25000], 1000, 100).a.filter(c => c === 1000).length, 25, 'cambio diretto, senza passare dai tagli di mezzo');
+  assert.deepStrictEqual(L.changeChips({ a: [1000, 1000, 1000, 1000, 1000] }, 'a', [1000, 1000, 1000, 1000, 1000], 5000, 100), { a: [5000] }, 'cambio verso l\'alto');
+  assert.deepStrictEqual(L.changeChips({ a: [1000, 1000] }, 'a', [1000, 1000], 5000, 100), { a: [1000, 1000] }, 'la somma non si divide');
+  for (const min of [100, 500, 1000]) for (let x = min; x <= 400000; x += min * 7) {
+    const st = L.stackFor(x, min), per = v => st.filter(c => c === v).length;
+    assert.strictEqual(L.zoneSum(st), x, 'stack ' + x);
+    assert(st.every(c => c >= min), 'taglio stack ' + x);
+    L.DENOMS.filter(d => d < 25000).forEach(d => assert(per(d) <= 9, `pila da contare a colpo d'occhio ${x}: ${per(d)} da ${d}`));
+  }
+  // The stacks must be cuttable: on a normal table most side pots need no change at all.
+  let clean = 0; const N = 1000;
+  for (let i = 0; i < N; i++) {
+    const pl = L.sideScenario('normal'), { pots } = L.computePots(pl); let ok = true;
+    const left = Object.fromEntries(pl.map(p => [p.name, L.stackFor(p.c, pl.step)]));
+    pots.forEach(pot => pot.elig.forEach(n => { let need = pot.step; left[n].sort((a, b) => b - a); for (let k = 0; k < left[n].length && need;) { if (left[n][k] <= need) need -= left[n].splice(k, 1)[0]; else k++; } if (need) ok = false; }));
+    if (ok) clean++;
+  }
+  assert(clean / N > .6, 'troppi cambi: ' + clean / N);
+  assert(L.readMs({ title: 'uno due tre', lines: ['quattro cinque sei'] }) === 2000, 'lettura');
+  assert(L.readMs({}) === 0, 'niente da leggere, nessun tempo');
   assert.strictEqual(L.grade('pot', { fields: [{ answer: 1 }], steps: [], rules: [] }, { vals: ['1'] }).ok, true, 'vecchio errore salvato senza tavolo');
 });
 ok('prova di selezione: stesso codice stessa prova, composizione fissa, punteggio', () => {

@@ -1,6 +1,6 @@
 'use strict';
 // User interface. No innerHTML anywhere: every element is built with h(), text goes in as text.
-const APP_VERSION = '3.0.0';
+const APP_VERSION = '3.1.0';
 const { CATS, SYM, TYPES, GROUPS, GEN, SLOTS, TARGET, fmt, parseNum, rv, shuffle, pick, grade, quizQ, winners, best, boardInfo } = DT;
 DT.setQuiz(QUIZ);
 
@@ -65,7 +65,9 @@ const label = t => h('div', { class: 'label' }, t);
 const meter = p => h('div', { class: 'meter' }, h('i', { style: `width:${Math.max(0, Math.min(100, p))}%` }));
 function pos(i, kp = 1, kl = kp) {
   const t = (24 + 39 * i) * Math.PI / 180, s = Math.sin(t), c = Math.cos(t), f = x => x.toFixed(1) + '%';
-  return `--px:${f(50 - 39 * s * kp)};--py:${f(50 + 41 * c * kp)};--lx:${f(50 - 44 * s * kl)};--ly:${f(50 + 38 * c * kl)}`;
+  // Compact table on the phone: inner marks stay off the side seats and fan out at the ends, where neighbours share a row.
+  const cw = kl < 1 ? kl * (Math.abs(s) > .8 ? .83 : 1.13) : 1, ch = kl < 1 ? kl * .84 : 1;
+  return `--px:${f(50 - 39 * s * kp)};--py:${f(50 + 41 * c * kp)};--lx:${f(50 - 44 * s * kl)};--ly:${f(50 + 38 * c * kl)};--cx:${f(50 - 39 * s * cw)};--cy:${f(50 + 35 * c * ch)}`;
 }
 const tableEl = (...kids) => h('div', { class: 'table' }, h('div', { class: 'felt' }), h('div', { class: 'you' }, 'TU'), kids);
 function seatEl(slot, kids, o = {}) {
@@ -94,14 +96,16 @@ function chipTable(stacks) {
     return h('div', { class: 'col' }, h('div', { class: 'pilerow' }, piles.map(n => h('div', { class: 'fstack' }, Array.from({ length: n }, () => chipDisc(s.v))))), h('b', null, fmt(s.v)));
   }))));
 }
-// Seat 1 sits bottom left and the numbers run clockwise, as on the oval table.
-const seatCell = n => n === 5 ? 'grid-area:1/2' : n < 5 ? `grid-area:${5 - n}/1` : `grid-area:${n - 5}/3`;
+// Seats in play only: the lowest sits bottom left and the numbers run clockwise, as on the oval table.
+const seatCell = (i, n) => { const l = Math.ceil(n / 2); return i < l ? `grid-area:${l - i}/1` : `grid-area:${i - l + 1}/3`; };
 const shortV = v => v >= 1000 ? v / 1000 + 'k' : String(v);
 const zones = () => cur.a.z || cur.q.felt.z;
+// The value is on the chip and the pieces are written next to it: a pile reads as "7 × 1k" at a glance. The sum stays yours.
+const chipFace = v => h('i', { class: 'cf', style: `--c:${CHIP[v]}` }, h('b', null, shortV(v)));
 function pileEl(v, n, z) {
   if (!n) return null;
-  const kids = [h('span', { class: 'fstack' }, Array.from({ length: n }, () => chipDisc(v))), h('b', null, shortV(v))];
-  return z ? h('button', { class: 'fp', 'data-act': 'chip', 'data-z': z, 'data-v': v, 'aria-label': `Prendi una fiche da ${fmt(v)}` }, kids) : h('span', { class: 'fp' }, kids);
+  const kids = [chipFace(v), h('em', null, '×' + n)], cls = `fp ${n > 1 ? 'many' : ''}`;
+  return z ? h('button', { class: cls, 'data-act': 'chip', 'data-z': z, 'data-v': v, 'aria-label': `Prendi una fiche da ${fmt(v)}, ce ne sono ${n}` }, kids) : h('span', { class: cls }, kids);
 }
 const pilesFor = chips => DT.DENOMS.map(v => pileEl(v, chips.filter(c => c === v).length));
 function pilesOf(id, z, hand) {
@@ -114,13 +118,13 @@ function tapChip(z, v) {
   const hand = cur.hand || { from: z, chips: [] }, inHand = hand.chips.filter(c => c === v).length;
   if (zones()[z].filter(c => c === v).length > inHand) { hand.chips.push(v); cur.hand = hand; buzz(5); }
 }
-function placeHand(to) {
+function placeHand(to, size) {
   const hand = cur.hand; if (!hand) return;
   cur.hand = null;
   if (to === hand.from) return;
   if (to !== 'change') { cur.a.z = DT.moveChips(zones(), hand.from, hand.chips, to); (cur.a.seq = cur.a.seq || []).push(hand.from); cur.fly = { from: hand.from, to, chips: hand.chips }; buzz(8); return; }
-  const z = DT.breakChips(zones(), hand.from, hand.chips, cur.q.felt.min);
-  if (JSON.stringify(z) === JSON.stringify(zones())) toast('Più piccola di così non si cambia.'); else cur.a.z = z;
+  const z = DT.changeChips(zones(), hand.from, hand.chips, size, cur.q.felt.min);
+  if (z === zones()) toast(`${fmt(DT.zoneSum(hand.chips))} non si cambia in fiches da ${fmt(size)}.`); else { cur.a.z = z; buzz(8); }
 }
 // Tapped chips travel to where you put them. A drag does not need it: the finger already carried them.
 function flyChips() {
@@ -224,11 +228,16 @@ function beginPlay() {
 // Plain sessions count up; the timed session counts down from the target and marks the question missed at zero.
 function tick() {
   const t = document.getElementById('clock'); if (!t || !cur || !ses || cur.res) return;
-  const s = Math.floor((Date.now() - cur.t0) / 1000);
-  if (!ses.timed) { t.textContent = s + 's'; return; }
-  const left = limit(cur.type) - s;
-  t.textContent = Math.max(0, left) + 's'; t.className = left <= 5 ? 'late' : '';
+  t.textContent = clockText();
+  if (!ses.timed || Date.now() < cur.t0) return;
+  const left = limit(cur.type) - Math.floor((Date.now() - cur.t0) / 1000);
+  t.className = left <= 5 ? 'late' : '';
   if (left <= 0) timeout();
+}
+function clockText() {
+  const s = Math.floor((Date.now() - cur.t0) / 1000);
+  if (s < 0) return 'lettura';
+  return ses.timed ? Math.max(0, limit(cur.type) - s) + 's' : `${s}s / ${TARGET[cur.type]}s`;
 }
 const limit = t => TARGET[t] * (ses.sel ? DT.SEL.slack : 1);
 function timeout() {
@@ -250,7 +259,8 @@ function next(sameType) {
     if (due.length) { const it = pick(due); type = it.type; q = it.q; srsId = it.id; }
     else { type = pickMix(); q = make(type); }
   } else { type = ses.mode; q = make(type); }
-  setCur({ type, q, srsId, a: { cards: [], seats: [], vals: {}, roles: {} }, t0: Date.now(), res: null });
+  // The selection test keeps its own margin (SEL.slack): every other clock starts once the text has been read.
+  setCur({ type, q, srsId, a: { cards: [], seats: [], vals: {}, roles: {} }, t0: Date.now() + (ses.sel ? 0 : DT.readMs(q)), res: null });
   render();
   const f = app.querySelector('input:not([readonly])'); if (f && !coarse()) f.focus();
   window.scrollTo(0, 0);
@@ -275,7 +285,7 @@ function header() {
   const info = ses.total ? `${Math.min(ses.done + (cur.res ? 0 : 1), ses.total)}/${ses.total}` : `${ses.ok}/${ses.done} giuste`;
   return h('div', { class: 'top' },
     h('button', { class: 'back', 'data-act': ses.sel ? 'selexit' : 'exit' }, ses.sel ? '‹ Esaminatore' : '‹ Esci'),
-    h('div', { class: 'info' }, `${TYPES[cur.type].n} · ${info} · `, h('span', { id: 'clock' }, cur.res ? (cur.res.ms / 1000).toFixed(1) + 's' : ses.timed ? limit(cur.type) + 's' : '0s')));
+    h('div', { class: 'info' }, `${TYPES[cur.type].n} · ${info} · `, h('span', { id: 'clock' }, cur.res ? (cur.res.ms / 1000).toFixed(1) + 's' : clockText())));
 }
 function resultEl(r) {
   const chips = (r.rules || []).map(id => h('button', { class: 'chip', 'data-act': 'rule', 'data-v': id }, ruleLabel(id)));
@@ -345,7 +355,7 @@ const R = {
         else if (v === val) c = 'on';
         return h('button', { class: `btn ${c}`, 'data-act': 'yn', 'data-k': k, 'data-v': val ? 1 : 0 }, l);
       };
-      return [label(t), h('div', { class: 'seg' }, bt(true, 'Sì'), bt(false, 'No'))];
+      return h('div', { class: 'yn' }, label(t), h('div', { class: 'seg' }, bt(true, 'Sì'), bt(false, 'No')));
     };
     return [label(`Siamo al ${{ 3: 'flop', 4: 'turn', 5: 'river' }[board.length]}, e conta quello che è possibile adesso`), tableEl(boardEl(board), [1, 3, 4, 5, 7].map(s => seatEl(s, backs()))), yn('paired', 'È accoppiato?'), yn('flush', 'Il colore è possibile?'), yn('straight', 'La scala è possibile?'), label('Punto massimo possibile'), catBtns(cur.a.cat, done ? inf.nut[0] : null)];
   },
@@ -358,20 +368,23 @@ const R = {
     const zone = (id, title, o = {}) => {
       const n = DT.zoneSum(z[id]), w = f.want[id] || 0, right = n === w;
       return h('div', { class: `zone ${o.cls || ''} ${done ? (right ? 'good' : 'wrong') : ''} ${hand && hand.from === id ? 'from' : ''}`, style: o.style, 'data-act': 'place', 'data-z': id },
-        h('button', { class: 'zh', 'data-grab': id, 'aria-label': `${title}: tocca per posare le chips, trascina per prenderle tutte` }, h('span', null, title), o.kids,
+        h('button', { class: 'zh', 'data-grab': id, 'aria-label': `${title}: tocca per posare le chips, trascina per prenderle tutte` }, h('span', { class: 'zt' }, title), o.kids,
           done && h('b', null, fmt(n)), done && !right && h('span', { class: 'fix' }, fmt(w))),
         h('div', { class: 'fps' }, pilesOf(id, z, hand)));
     };
-    const seats = q.table.seats.map(s =>
-      zone('s' + s.n, `Posto ${s.n}`, { style: seatCell(s.n), kids: [q.table.button === s.n && h('i', { class: 'dbtn' }, 'D'), s.tag && h('span', { class: `tag ${s.tag === 'FOLD' ? 'fold' : ''}` }, s.tag)] }));
+    // A folded seat with nothing in front of it has no part in the exercise.
+    const inPlay = q.table.seats.filter(s => s.tag !== 'FOLD' || (f.z['s' + s.n] || []).length).sort((a, b) => a.n - b.n);
+    const seats = inPlay.map((s, i) =>
+      zone('s' + s.n, `Posto ${s.n}`, { style: seatCell(i, inPlay.length), kids: [q.table.button === s.n && h('i', { class: 'dbtn' }, 'D'), s.tag && s.tag !== 'ALL-IN' && h('span', { class: `tag ${s.tag === 'FOLD' ? 'fold' : ''}` }, s.tag)] }));
     const ids = [...new Set([...Object.keys(z), ...(done ? Object.keys(f.want) : [])])].filter(id => id[0] === 'p').sort();
-    const held = hand ? h('div', { class: 'fps' }, pilesFor(hand.chips)) : h('span', { class: 'small' }, 'Niente');
-    return [qBox(q),
-      label('Tocca una pila per contare le chips una a una, poi tocca dove posarle. Trascina per spostare la pila intera.'),
-      h('div', { class: 'felt2' }, h('div', { class: 'you' }, 'TU'), seats, h('div', { class: 'pots' }, ids.map(id => zone(id, DT.potName(+id.slice(1)), { cls: 'potz' })), f.add && !done ? h('button', { class: 'btn addpot', 'data-act': 'addpot' }, '+ Side pot') : null)),
-      done ? null : h('div', { class: 'tray' }, h('div', { class: 'hand' }, h('span', { class: 'small' }, 'In mano'), held, hand ? h('button', { class: 'btn', 'data-act': 'putback' }, 'Rimetti giù') : null),
-        h('button', { class: 'btn change', 'data-act': 'place', 'data-z': 'change', disabled: !hand }, 'Cambio')),
-      q.fields ? fieldsEl(q) : null];
+    // Training only: the exam and the selection test count without help.
+    const held = hand ? [h('div', { class: 'fps' }, pilesFor(hand.chips)), !ses.exam && !ses.sel && h('b', { class: 'sum' }, fmt(DT.zoneSum(hand.chips)))] : h('span', { class: 'small' }, 'Tocca: una fiche. Trascina: tutta la pila.');
+    const sizes = DT.DENOMS.filter(d => d >= f.min && d <= Math.max(...Object.values(f.z).flat()));
+    return [qBox(q, q.shown),
+      h('div', { class: 'felt2', style: `--r:${Math.ceil(inPlay.length / 2)};${f.elig ? '--mid:2.3fr' : ''}` }, h('div', { class: 'you' }, 'TU'), seats, h('div', { class: 'pots' }, ids.map(id => zone(id, DT.potName(+id.slice(1)), { cls: 'potz', kids: f.elig && f.elig[id] && h('span', { class: 'elig' }, 'Posti ' + f.elig[id].join(' · ')) })), f.add && !done ? h('button', { class: 'btn addpot', 'data-act': 'addpot' }, '+ Side pot') : null)),
+      done ? null : h('div', { class: 'tray' }, h('div', { class: 'hand' }, hand ? h('span', { class: 'small' }, 'In mano') : null, held, hand ? h('button', { class: 'btn', 'data-act': 'putback' }, 'Rimetti giù') : null),
+        q.fields ? null : h('div', { class: 'swap' }, h('span', { class: 'small' }, 'Cambia in'), sizes.map(d => h('button', { class: 'cbtn', 'data-act': 'place', 'data-z': 'change', 'data-to': d, disabled: !hand || !DT.canChange(hand.chips, d, f.min), 'aria-label': `Cambia in fiches da ${fmt(d)}` }, chipFace(d))))),
+      q.fields && (done || Object.keys(z).every(id => id[0] !== 's' || !z[id].length)) ? fieldsEl(q) : null];
   },
   choice() {
     const q = cur.q, done = cur.res;
@@ -391,7 +404,7 @@ const R = {
       if (done) k = s.n === q.answer ? 'win' : (cur.a.seat === s.n ? 'miss' : '');
       return { act: 'pickseat', cls: k };
     });
-    return [label(q.ask), t, qBox(q)];
+    return [label(q.ask), t, qBox({ ...q, title: null })];
   },
   roles() {
     const q = cur.q, done = cur.res, r = cur.a.roles, role = { btn: 'Bottone', sb: 'Small blind', bb: 'Big blind' };
@@ -402,27 +415,33 @@ const R = {
       if (done) { const a = q.answer, rightHere = [a.btn, a.sb, a.bb].includes(s.n), mineHere = [r.btn, r.sb, r.bb].includes(s.n); k = rightHere ? 'win' : mineHere ? 'miss' : ''; }
       return { act: 'pickseat', cls: k, tags };
     });
-    const seg = h('div', { class: 'seg' }, Object.keys(role).map(k => h('button', { class: `btn ${cur.role === k ? 'on' : ''}`, 'data-act': 'role', 'data-v': k }, role[k] + (r[k] != null ? (r[k] === 0 ? ': nessuno' : `: ${r[k]}`) : ''))));
+    const seg = h('div', { class: 'seg roles' }, Object.keys(role).map(k => h('button', { class: `btn ${cur.role === k ? 'on' : ''}`, 'data-act': 'role', 'data-v': k }, role[k] + (r[k] != null ? (r[k] === 0 ? ': nessuno' : `: ${r[k]}`) : ''))));
     const none = cur.role === 'sb' && !done ? h('button', { class: 'btn wide', 'data-act': 'nosb' }, 'Nessuno small blind in questa mano') : null;
     const sol = done ? h('p', { class: 'small' }, `Giusto: bottone ${q.answer.btn}, small blind ${q.answer.sb || 'nessuno'}, big blind ${q.answer.bb}.`) : null;
     return [label('Scegli il ruolo, poi tocca il posto'), seg, none, t, qBox(q), sol];
   }
 };
+// Phone: what to do, the table, the answer, with the button always in reach. Desktop: the table on the left and the rest beside it.
+function layout(kids) {
+  const flat = kids.flat(Infinity).filter(Boolean), is = (e, ...c) => c.some(x => e.classList.contains(x)), ask = [], stage = [], ctl = [], act = [];
+  flat.forEach((e, i) => (is(e, 'table', 'felt2') ? stage : is(e, 'q') || (!i && is(e, 'label')) ? ask : is(e, 'primary', 'twobtn', 'hint') ? act : ctl).push(e));
+  return h('div', { class: `game ${stage.length ? '' : 'plain'}` }, h('div', { class: 'ask' }, ask), stage.length ? h('div', { class: 'stage' }, stage) : null, h('div', { class: 'ctl' }, ctl), h('div', { class: 'act' }, act));
+}
 function render() {
   const k = DT.kindOf(cur.type, cur.q), body = (R[k] || R.num)();
-  show(cur.review ? h('div', { class: 'top' }, h('button', { class: 'back', 'data-act': 'backsum' }, '‹ Riepilogo')) : header(), body, footer());
+  show(cur.review ? h('div', { class: 'top' }, h('button', { class: 'back', 'data-act': 'backsum' }, '‹ Riepilogo')) : header(), layout([body, footer()]));
   if (cur.fly) flyChips();
 }
 function confirmQ() {
   if (cur.res) return;
-  if (cur.q.fields) cur.q.fields.forEach((f, i) => { cur.a.vals[i] = document.getElementById('f' + i).value.trim(); });
+  if (cur.q.fields) cur.q.fields.forEach((f, i) => { const e = document.getElementById('f' + i); if (e) cur.a.vals[i] = e.value.trim(); });
   const r = grade(cur.type, cur.q, cur.a);
   if (!r) { document.getElementById('hint').textContent = 'Manca ancora qualcosa da rispondere.'; return; }
   finishQ(r);
 }
 function finishQ(r) {
   cur.hand = null;
-  r.ms = Date.now() - cur.t0;
+  r.ms = Math.max(0, Date.now() - cur.t0);
   // The selection test belongs to the candidate, not to the owner of the device: it stays out of stats and review.
   if (!ses.sel) {
     record(cur.type, r.ok, r.ms);
@@ -936,7 +955,7 @@ function onClick(e) {
   if (act === 'nosb') { cur.a.roles.sb = 0; const nx = ['bb', 'btn'].find(k => cur.a.roles[k] == null); if (nx) cur.role = nx; }
   if (act === 'key') return padKey(v);
   if (act === 'chip') tapChip(b.dataset.z, +v);
-  if (act === 'place') placeHand(b.dataset.z);
+  if (act === 'place') placeHand(b.dataset.z, +b.dataset.to);
   if (act === 'putback') cur.hand = null;
   if (act === 'addpot') { const z = cur.a.z = JSON.parse(JSON.stringify(zones())); z['p' + Object.keys(z).filter(k => k[0] === 'p').length] = []; }
   render();
@@ -996,7 +1015,7 @@ document.addEventListener('pointerup', e => {
   d.ghost.remove(); skipClick = true; setTimeout(() => { skipClick = false; });
   if (!cur || cur.res) return;
   const t = document.elementFromPoint(e.clientX, e.clientY), to = t && t.closest('[data-z]');
-  if (to) placeHand(to.dataset.z); else cur.hand = d.had;
+  if (to) placeHand(to.dataset.z, +to.dataset.to); else cur.hand = d.had;
   cur.fly = null;
   render();
 });

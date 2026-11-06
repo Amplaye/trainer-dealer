@@ -278,8 +278,18 @@
   }
   // ---------- chips on the felt: the table itself holds the state, nothing to keep in your head ----------
   const DENOMS = [25000, 5000, 1000, 500, 100];
-  const BREAK = { 25000: [5000, 5], 5000: [1000, 5], 1000: [500, 2], 500: [100, 5] };
   function chipsFor(x) { const out = []; for (const d of DENOMS) while (x >= d) { out.push(d); x -= d; } return out; }
+  // A working stack, not the fewest chips: a spare round of every smaller size, so most cuts need no change at all.
+  function stackFor(x, min) {
+    const ds = DENOMS.filter(d => d >= min).reverse(), out = [];
+    ds.forEach((d, i) => {
+      const up = ds[i + 1]; let n = up ? (x % up) / d : x / d;
+      if (up && x - n * d >= up) n += up / d;
+      for (let k = 0; k < n; k++) out.push(d);
+      x -= n * d;
+    });
+    return out.reverse();
+  }
   const zoneSum = cs => (cs || []).reduce((a, b) => a + b, 0);
   const copyZ = z => JSON.parse(JSON.stringify(z));
   const pull = (cs, v) => { const i = cs.indexOf(v); if (i < 0) throw new Error('fiche assente: ' + v); cs.splice(i, 1); };
@@ -288,10 +298,13 @@
     chips.forEach(v => { pull(o[from], v); (o[to] = o[to] || []).push(v); });
     return o;
   }
-  // Change stays in the zone it came from, like swapping a chip with the tray. Never below the smallest chip in play.
-  function breakChips(z, from, chips, min) {
+  // Change stays in the zone it came from, like swapping with the tray: any size in play, up or down, as long as the sum divides.
+  const canChange = (chips, to, min) => to >= min && chips.some(c => c !== to) && zoneSum(chips) % to === 0;
+  function changeChips(z, from, chips, to, min) {
+    if (!canChange(chips, to, min)) return z;
     const o = copyZ(z);
-    chips.forEach(v => { const b = BREAK[v]; if (!b || b[0] < min) return; pull(o[from], v); for (let i = 0; i < b[1]; i++) o[from].push(b[0]); });
+    chips.forEach(v => pull(o[from], v));
+    for (let i = zoneSum(chips) / to; i > 0; i--) o[from].push(to);
     return o;
   }
   // Illustration Addendum 17: the side pots are awarded before the main pot.
@@ -337,7 +350,7 @@
     const z = { p0: chipsFor(flop ? flop.before : antes) }, want = { p0: pot };
     table.seats.forEach(s => { const c = flop ? (flop.seats.includes(s.n) ? flop.b : 0) : s.bet || 0; z['s' + s.n] = chipsFor(c); want['s' + s.n] = 0; });
     steps.push(`Totale: ${fmt(pot)}.`);
-    return { title: 'Quanto c\'è nel piatto?', head: `Bui ${fmt(sb)}/${fmt(bb)}.`, lines, table, felt: { z, want, min: 100 }, fields: [{ label: 'Piatto totale', answer: pot }], steps, tip: 'In no-limit il piatto non si annuncia: è un conto che tieni per te, per esempio per la regola 59 sulle puntate ambigue.', rules: ['R56', 'R59'] };
+    return { title: 'Porta tutto nel piatto e scrivi il totale', head: '', lines, shown: [], table, felt: { z, want, min: 100 }, fields: [{ label: 'Piatto totale', answer: pot }], steps, tip: 'In no-limit il piatto non si annuncia: è un conto che tieni per te, per esempio per la regola 59 sulle puntate ambigue.', rules: ['R56', 'R59'] };
   }
   function genChips(level) {
     const set = pick([[100, 500, 1000, 5000], [500, 1000, 5000, 25000], [25, 100, 500, 1000]]);
@@ -351,7 +364,7 @@
       stacks.push({ v, n }); t += n * v;
     });
     steps.push(`Totale: ${fmt(t)}.`);
-    return { title: 'Conta lo stack', head: 'Pile ordinate da 20 pezzi, come vuole la regola 27.', lines, shown: level === 'easy' ? lines : [], stacks, fields: [{ label: 'Totale', answer: t }], steps, tip: 'Conta per pile: una pila da 20 vale 20 volte il gettone. È il modo più veloce per stimare un all-in.', rules: ['R27', 'R62'] };
+    return { title: 'Conta lo stack', head: 'Una pila piena è di 20 fiches.', lines, shown: level === 'easy' ? lines : [], stacks, fields: [{ label: 'Totale', answer: t }], steps, tip: 'Conta per pile: una pila da 20 vale 20 volte il gettone. È il modo più veloce per stimare un all-in.', rules: ['R27', 'R62'] };
   }
   function splitPot(pot, chip, seats, button) {
     const order = seats.slice().sort((a, b) => ((a - button + 8) % 9) - ((b - button + 8) % 9));
@@ -375,9 +388,9 @@
       extra > 1 ? `Le ${extra} fiches in più, per prassi, vanno una a testa nell'ordine: ${order.slice(0, extra).join(', ')}.` : `La fiche in più va al posto ${order[0]}.`
     ];
     return {
-      title: 'Piatto diviso con fiche dispari', head: '', table,
-      lines: [`Fiche più piccola in gioco: ${fmt(chip)}.`, `Bottone al posto ${button}.`, `Dividono i posti ${seats.join(', ')}.`],
-      felt: { z: { p0: chipsFor(pot), ...Object.fromEntries(seats.map(s => ['s' + s, []])) }, want: { p0: 0, ...Object.fromEntries(seats.map(s => ['s' + s, pay[s]])) }, min: chip }, steps,
+      title: 'Dividi il piatto tra chi ha DIVIDE', head: '', table,
+      lines: [`Fiche più piccola: ${fmt(chip)}`, 'Quella in più va al primo a sinistra del bottone'],
+      felt: { z: { p0: stackFor(pot, chip), ...Object.fromEntries(seats.map(s => ['s' + s, []])) }, want: { p0: 0, ...Object.fromEntries(seats.map(s => ['s' + s, pay[s]])) }, min: chip }, steps,
       tip: 'Nei giochi con board la fiche in più va al primo a sinistra del bottone. La "posizione peggiore" (21-D, novità 2026) vale solo nei giochi non standard, non nell\'hold\'em. Con i side pot ogni piatto si divide per conto suo (regola 23).',
       rules: ['R21', 'R23']
     };
@@ -437,11 +450,13 @@
   function genSide(level) {
     const pl = sideScenario(level), { pots, refund } = computePots(pl);
     const z = { p0: [] }, want = {};
-    pl.forEach(p => { z['s' + p.n] = chipsFor(p.c); want['s' + p.n] = refund && refund.name === p.name ? refund.amount : 0; });
+    pl.forEach(p => { z['s' + p.n] = stackFor(p.c, pl.step); want['s' + p.n] = refund && refund.name === p.name ? refund.amount : 0; });
     pots.forEach((p, i) => { want['p' + i] = p.amount; });
     const steps = potSteps(pl, pots);
     if (refund) steps.push(`${refund.name}: i ${fmt(refund.amount)} in più non li copre nessuno, quindi tornano indietro. Non sono un piatto.`);
-    return { title: 'Dividi i piatti', head: '', lines: ['Conta gli all-in e costruisci i piatti. Quello che nessuno copre resta davanti al giocatore.'], table: sideTable(pl), felt: { z, want, min: pl.step, add: true }, steps, tip: 'Il gradino di ogni piatto è la differenza tra un all-in e il precedente, moltiplicata per chi ci arriva.', rules: ['R23', 'I17'] };
+    const lines = ['La cifra del più corto, da tutti → Principale', 'Col resto rifai uguale → Side pot', 'Quello che nessuno copre resta al posto'];
+    if (pl.some(p => p.folded)) lines.push('Chi ha foldato: tutto nel principale');
+    return { title: 'Fai i piatti', head: '', lines, table: sideTable(pl), felt: { z, want, min: pl.step, add: true }, steps, tip: 'Il gradino di ogni piatto è la differenza tra un all-in e il precedente, moltiplicata per chi ci arriva.', rules: ['R23', 'I17'] };
   }
   function genPay(level) {
     const pl = sideScenario(level), act = pl.filter(p => !p.folded), order = shuffle(act.map(p => p.name));
@@ -458,13 +473,14 @@
     steps.push('Somma quello che prende ogni posto.');
     const table = sideTable(pl); table.button = button;
     groups.forEach((g, i) => g.forEach(nm => st(table, pl.find(p => p.name === nm).n, { tag: `${i + 1}ª MANO` })));
-    const rank = 'Mani dalla migliore alla peggiore: ' + groups.map(g => g.join(' = ')).join(' > ') + '.';
-    const shown = [...pots.map((p, i) => `${potName(i)}: se lo giocano ${p.elig.join(', ')}.`), rank]; if (tie) shown.push(`Fiche più piccola in gioco: ${fmt(chip)}.`);
+    // Who plays each pot sits on the pot and the hand ranking on the seats: nothing left to read.
+    const shown = ['Ogni piatto alla mano migliore che lo gioca', 'Dall\'ultimo side pot fino al principale']; if (tie) shown.push(`Fiche più piccola: ${fmt(chip)}`);
+    const elig = Object.fromEntries(pots.map((p, i) => ['p' + i, p.elig.map(n => pl.find(x => x.name === n).n)]));
     const z = {}, want = {};
-    pots.forEach((p, i) => { z['p' + i] = chipsFor(p.amount); want['p' + i] = 0; });
-    pl.forEach(p => { z['s' + p.n] = refund && refund.name === p.name ? chipsFor(refund.amount) : []; want['s' + p.n] = pay[p.name]; });
+    pots.forEach((p, i) => { z['p' + i] = stackFor(p.amount, chip); want['p' + i] = 0; });
+    pl.forEach(p => { z['s' + p.n] = refund && refund.name === p.name ? stackFor(refund.amount, chip) : []; want['s' + p.n] = pay[p.name]; });
     return {
-      title: 'Paga i piatti', head: '', lines: shown, table, felt: { z, want, min: chip, order: true }, steps,
+      title: 'Paga i piatti', head: '', lines: shown, table, felt: { z, want, min: chip, order: true, elig }, steps,
       tip: 'Si assegna prima il side pot e poi il principale (Illustration Addendum, regola 17). Con più side pot la prassi è partire dall\'ultimo e tornare indietro. Le carte di chi gioca solo il principale si scoprono subito con le altre, non si aspetta il side pot.',
       rules: ['R23', 'I17', 'R21']
     };
@@ -511,7 +527,7 @@
       if (want === 'declared') {
         const v = denoms.find(d => d >= C + R && d > C); if (!v) continue;
         return {
-          title: 'Che azione è?', head, table, lines: [`Il giocatore di turno dice "raise" senza importo, prima che il gettone tocchi il tavolo, e mette 1 gettone da ${fmt(v)}. Ha altri gettoni dietro.`],
+          title: 'Che azione è?', head, table, lines: [`Dice "raise" prima di posare 1 gettone da ${fmt(v)}. Ha altri gettoni dietro.`],
           options: shuffle([{ t: `Rilancio a ${fmt(v)}`, ok: true }, { t: `Rilancio obbligato a ${fmt(C + R)}`, ok: C + R === v }, { t: callTxt(v - C), ok: false }].filter((o, i) => i !== 1 || C + R !== v)),
           steps: [`Ha detto "raise" prima che il gettone toccasse il tavolo, quindi non è un call.`, `Senza importo, il rilancio è il massimo possibile per quel gettone: ${fmt(v)}.`],
           rules: ['R46']
@@ -546,7 +562,7 @@
       if (min !== T) options.push({ t: `Rilancio obbligato a ${fmt(min)}`, ok: k.kind === 'forced' });
       if (T !== C) options.push({ t: `Rilancio a ${fmt(T)}`, ok: k.kind === 'raise' });
       return {
-        title: 'Che azione è?', head, table, lines: [`Il giocatore di turno mette in silenzio ${chipText(chips)}. Ha altri gettoni dietro.`],
+        title: 'Che azione è?', head, table, lines: [`Mette in silenzio ${chipText(chips)}. Ha altri gettoni dietro.`],
         options: shuffle(options), steps, tip: 'Queste regole valgono quando il giocatore non ha detto nulla. Se dichiara prima, conta la dichiarazione.',
         rules: k.why === 'single' ? ['R46', 'R43'] : ['R47', 'R45', 'I47']
       };
@@ -852,6 +868,12 @@
   // Seconds a dealer should need at the table. The timed session counts down from these.
   const TARGET = { win: 25, name: 30, board: 30, side: 90, pay: 90, raise: 30, call: 20, pot: 60, odd: 60, chips: 30, push: 25, reopen: 30, order: 15, show: 20, blinds: 30, bbante: 25, misdeal: 20, oot: 25, words: 20, penalty: 20, quiz: 20 };
 
+  // Reading is not the skill under test: about 3 words a second stay off the clock.
+  function readMs(q) {
+    const t = [q.title, q.head, ...(q.shown || q.lines || []), ...(q.options || []).map(o => o.t)].join(' ');
+    return Math.ceil(t.split(/\s+/).filter(Boolean).length / 3) * 1000;
+  }
+
   let QUIZ = [];
   function quizQ(id) {
     const x = QUIZ.find(k => k.id === id) || pick(QUIZ);
@@ -981,7 +1003,7 @@
 
   const api = {
     RANKS, SUITS, SYM, SUITN, CATS, RN, rv, fmt, parseNum, deck, deckMinus, shuffle, pick, eval5, cmp, best, describe, winners, boardInfo, boardFacts, straightWindow,
-    computePots, payouts, splitPot, classifyPush, SEL, selectionPlan, scoreSelection, payOrderOk, chipsFor, zoneSum, moveChips, breakChips, feltOk, kindOf, potName, DENOMS, sideScenario, trapBoard, GEN, TYPES, GROUPS, grade, quizQ, verdictLine, LV, SLOTS, solve, TARGET,
+    computePots, payouts, splitPot, classifyPush, SEL, selectionPlan, scoreSelection, payOrderOk, chipsFor, stackFor, zoneSum, moveChips, canChange, changeChips, feltOk, readMs, kindOf, potName, DENOMS, sideScenario, trapBoard, GEN, TYPES, GROUPS, grade, quizQ, verdictLine, LV, SLOTS, solve, TARGET,
     setQuiz: list => { QUIZ = list; }, quizList: () => QUIZ, ringFrom, seatAt
   };
   root.DT = api;
